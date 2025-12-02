@@ -328,7 +328,12 @@ class VloggerController(Node):
             self.processed_frame_count += 1
             should_process_detection = (self.processed_frame_count % self.process_every_n_frames == 0)
 
-            if should_process_detection:
+            # Check if robot is currently moving or settling
+            # We wait 0.8s after a move command before processing new detections
+            # This ensures we don't use blurry images or intermediate positions
+            is_moving_or_settling = (time.time() - self.last_move_time) < 0.8
+
+            if should_process_detection and not is_moving_or_settling:
                 # Detect face
                 human_detected, human_x, human_y, face_size = self.detect_human(cv_image, display_image)
 
@@ -352,6 +357,12 @@ class VloggerController(Node):
                 # Detect gestures (if enabled)
                 if self.gesture_mode:
                     gesture = self.detect_gesture(cv_image, display_image)
+            elif is_moving_or_settling:
+                # Clear history so we don't use old data
+                self.position_history.clear()
+                self.current_human_pos = None
+                cv2.putText(display_image, "ROBOT MOVING...",
+                          (10, 150), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 165, 255), 2)
             
             # Always draw overlay based on current state (even if detection was skipped this frame)
             if self.current_human_pos:
