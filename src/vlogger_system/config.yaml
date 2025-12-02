@@ -1,0 +1,97 @@
+# TM5-900 Indoor Vlogger Configuration
+
+# Camera Calibration
+camera:
+  matrix:
+    fx: 2711.03
+    fy: 2709.31
+    cx: 1332.58
+    cy: 1013.72
+  distortion_coeffs: [0.09845879, -0.89589613, -0.00460501, 0.00533473, 4.41194115]
+
+# Tracking Parameters
+tracking:
+  target_distance: 800.0  # mm - desired distance from human
+  min_distance: 500.0     # mm - minimum safe distance
+  max_distance: 1200.0    # mm - maximum tracking distance
+  centering_threshold: 50 # pixels - dead zone around center
+  movement_scale: 0.3     # movement scaling factor (0.0-1.0)
+  min_movement: 10.0      # mm - minimum movement to execute
+
+  # Position smoothing
+  position_history_size: 5  # number of frames to average
+
+  # Distance estimation (monocular vision - no depth sensor)
+  # Uses face size in pixels as proxy for distance
+  average_face_width_mm: 150.0   # mm - typical adult face width
+  target_face_size: 400.0        # pixels - ideal face size for framing
+  face_size_tolerance: 100.0     # pixels - acceptable variation before adjusting
+  auto_distance_adjust: true     # automatically adjust distance based on face size
+  max_distance_adjustment: 50.0  # mm - maximum adjustment per update cycle
+
+# Movement Parameters
+movement:
+  max_movement_rate: 2.0  # Hz - maximum movements per second
+  default_speed: 80       # % - robot movement speed
+  default_acceleration: 150  # robot acceleration value
+
+  # Workspace limits (safety)
+  workspace:
+    x_min: 0.0
+    x_max: 500.0
+    y_min: 0.0
+    y_max: 500.0
+    z_min: 500.0
+    z_max: 1200.0
+
+# Initial Position
+initial_position:
+  x: 230.0
+  y: 230.0
+  z: 800.0
+  rx: -180.0
+  ry: 0.0
+  rz: 0.0
+
+# Gesture Recognition
+gesture:
+  enabled: true
+  cooldown: 2.0  # seconds between gesture commands
+  distance_step: 100.0  # mm to move per gesture
+
+  # MediaPipe settings
+  mediapipe:
+    max_num_hands: 1
+    min_detection_confidence: 0.5
+    min_tracking_confidence: 0.5
+
+# Face Detection
+face_detection:
+  # Haar Cascade parameters
+  scale_factor: 1.1
+  min_neighbors: 5
+  min_size: [100, 100]  # [width, height] in pixels
+
+# Control Loop
+control:
+  frequency: 10.0  # Hz - control loop update rate
+
+# ROS2 Topics
+ros2:
+  image_topic: "techman_image"
+  send_script_service: "send_script"
+  set_io_service: "set_io"
+
+# Display
+display:
+  show_window: true
+  window_name: "Vlogger View"
+  draw_tracking_info: true
+  draw_gestures: true
+
+# Logging
+logging:
+  level: "INFO"  # DEBUG, INFO, WARN, ERROR
+  log_movements: true
+  log_gestures: true
+  log_detections: false
