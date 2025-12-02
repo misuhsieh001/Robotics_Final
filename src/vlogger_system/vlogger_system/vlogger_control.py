@@ -146,14 +146,16 @@ class VloggerController(Node):
         
         # Adjusted for 640x480 resolution (approx 1/4 of original 2592 width)
         self.target_face_size = 100.0  # pixels - target face size for good framing (was 400)
-        self.face_size_tolerance = 25.0  # pixels - acceptable variation (was 100)
+        # With low FPS, use tighter tolerance to ensure accurate distance
+        self.face_size_tolerance = 50.0  # pixels - tighter tolerance (was 25.0)
         self.auto_distance_adjust = True  # Enable automatic distance adjustment based on face size
 
         # Movement parameters
-        self.centering_threshold = 25  # pixels - if human is within this, don't move (was 100)
+        # With low FPS, we want to be more precise - smaller threshold means more accurate centering
+        self.centering_threshold = 15  # pixels - tighter tolerance for accurate tracking (was 25)
         self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
-        # Allow finer distance adjustments to react when face size changes
-        self.min_movement = 2.0  # mm - minimum movement to execute (lowered from 10.0)
+        # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
+        self.min_movement = 5.0  # mm - minimum movement to execute (raised from 2.0 for stability)
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -191,13 +193,26 @@ class VloggerController(Node):
         # Disable expensive per-frame face-mesh landmark drawing to improve FPS
         self.draw_face_mesh = False
 
+        # CUDA acceleration flag (use for GPU-accelerated image ops if available)
+        # Note: This only accelerates OpenCV operations (resize/upload/download).
+        # MediaPipe face_mesh currently runs on CPU in this setup. GPU can still
+        # help by reducing CPU load for image resize / copy operations.
+        try:
+            self.cuda_device_count = cv2.cuda.getCudaEnabledDeviceCount()
+            self.use_cuda = self.cuda_device_count > 0
+        except Exception:
+            self.cuda_device_count = 0
+            self.use_cuda = False
+        self.get_logger().info(f'CUDA available: {self.use_cuda} (devices={self.cuda_device_count})')
+
         # Gesture commands (with debouncing)
         self.last_gesture = None
         self.gesture_cooldown = 2.0  # seconds
         self.last_gesture_time = 0.0
 
         # Smoothing for human position
-        self.position_history = deque(maxlen=5)  # Average last 5 positions
+        # With low FPS (~0.3 Hz), reduce smoothing to be more responsive to each frame
+        self.position_history = deque(maxlen=2)  # Average last 2 positions only (was 5)
 
         # FPS calculation for live view
         self.frame_count = 0
@@ -312,8 +327,20 @@ class VloggerController(Node):
             height = int(cv_image.shape[0] * scale)
             dim = (width, height)
             
-            # Perform resize
-            cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
+            # Perform resize (prefer GPU path if available)
+            if getattr(self, 'use_cuda', False):
+                try:
+                    gpu_src = cv2.cuda_GpuMat()
+                    gpu_src.upload(cv_image)
+                    # Use INTER_LINEAR on GPU for speed; fallback to CPU if fails
+                    gpu_resized = cv2.cuda.resize(gpu_src, dim, interpolation=cv2.INTER_LINEAR)
+                    cv_image = gpu_resized.download()
+                except Exception as e:
+                    # If any CUDA operation fails, fallback to CPU resize
+                    self.get_logger().warning(f'CUDA resize failed, falling back to CPU: {e}')
+                    cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
+            else:
+                cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
             
             # Update image center based on actual resized dimensions
             self.image_center_x = width / 2.0
@@ -329,9 +356,9 @@ class VloggerController(Node):
             should_process_detection = (self.processed_frame_count % self.process_every_n_frames == 0)
 
             # Check if robot is currently moving or settling
-            # We wait 0.5s after a move command before processing new detections
-            # Reduced from 0.8s to improve response time
-            is_moving_or_settling = (time.time() - self.last_move_time) < 0.5
+            # With low FPS, wait longer to ensure robot has fully stopped
+            # This prevents detecting blurry/intermediate images
+            is_moving_or_settling = (time.time() - self.last_move_time) < 1.0
 
             if should_process_detection and not is_moving_or_settling:
                 # Detect face
@@ -342,12 +369,14 @@ class VloggerController(Node):
                     self.position_history.append((human_x, human_y, face_size))
 
                     # Calculate smoothed position
-                    if len(self.position_history) >= 3:
+                    # With low FPS, use minimal smoothing (just average last 2 frames)
+                    if len(self.position_history) >= 2:
                         avg_x = np.mean([p[0] for p in self.position_history])
                         avg_y = np.mean([p[1] for p in self.position_history])
                         avg_size = np.mean([p[2] for p in self.position_history])
                         self.current_human_pos = (avg_x, avg_y, avg_size)
                     else:
+                        # Use first detection immediately (no waiting)
                         self.current_human_pos = (human_x, human_y, face_size)
                 else:
                     # No human detected - clear position data to prevent movement
