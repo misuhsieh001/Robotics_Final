@@ -152,7 +152,8 @@ class VloggerController(Node):
         # Movement parameters
         self.centering_threshold = 25  # pixels - if human is within this, don't move (was 100)
         self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
-        self.min_movement = 10.0  # mm - minimum movement to execute
+        # Allow finer distance adjustments to react when face size changes
+        self.min_movement = 2.0  # mm - minimum movement to execute (lowered from 10.0)
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -449,7 +450,9 @@ class VloggerController(Node):
         """
         if not self.window_created:
             return
-
+        # Ensure display_image is always defined in this scope so exceptions
+        # won't produce UnboundLocalError when accessing the variable in logs.
+        display_image = None
         try:
             # Get latest image with thread-safe lock
             with self.image_lock:
@@ -470,12 +473,16 @@ class VloggerController(Node):
                         rclpy.shutdown()
                     return
 
-                    # Make a copy for display
-                    display_image = self.latest_display_image.copy()
+                # Make a copy for display
+                display_image = self.latest_display_image.copy()
                 frame_age = time.time() - self.latest_frame_timestamp
                 self.last_displayed_timestamp = self.latest_frame_timestamp
 
             # Add frame freshness indicator (top-right corner)
+            if display_image is None:
+                # Nothing to do (shouldn't happen because we returned earlier), but guard anyway
+                return
+
             h, w = display_image.shape[:2]
             freshness_text = f"Frame age: {frame_age:.2f}s"
             freshness_color = (0, 255, 0) if frame_age < 1.0 else (0, 165, 255) if frame_age < 3.0 else (0, 0, 255)
@@ -501,7 +508,10 @@ class VloggerController(Node):
                 self.current_human_pos = None
 
         except Exception as e:
+            # Log the error and disable window updates to prevent repeated exceptions.
+            import traceback
             self.get_logger().error(f'Error updating window: {str(e)}')
+            self.get_logger().error(traceback.format_exc())
             self.window_created = False  # Disable window updates on error
 
     def trigger_camera_capture(self):
@@ -888,9 +898,11 @@ class VloggerController(Node):
                 if abs(face_size_diff) > self.face_size_tolerance:
                     # If face too big (diff > 0), move Back (-1, 1) direction
                     # If face too small (diff < 0), move Forward (1, -1) direction
-                    adjustment = face_size_diff * 0.5
-                    
-                    max_adjustment = 50.0
+                    # Increase gain so face-size changes produce noticeable robot motion.
+                    # face_size_diff is in pixels; multiplier maps it to mm adjustment.
+                    adjustment = face_size_diff * 1.0
+
+                    max_adjustment = 80.0
                     adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
                     new_x -= adjustment  # Subtract adjustment to move in correct direction
