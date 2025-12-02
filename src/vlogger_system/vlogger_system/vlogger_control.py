@@ -210,7 +210,7 @@ class VloggerController(Node):
         self.latest_frame_timestamp = 0.0  # Timestamp of latest frame
         self.last_displayed_timestamp = -1.0  # Timestamp of last displayed frame (start with -1 to force initial update)
 
-        # Control loop timer (1 Hz - User requested movement every 1 second)
+        # Control loop timer (10 Hz - Increased frequency for faster response)
         self.control_timer = self.create_timer(1.0, self.control_loop)
         self.last_move_time = time.time()
         
@@ -329,9 +329,9 @@ class VloggerController(Node):
             should_process_detection = (self.processed_frame_count % self.process_every_n_frames == 0)
 
             # Check if robot is currently moving or settling
-            # We wait 0.8s after a move command before processing new detections
-            # This ensures we don't use blurry images or intermediate positions
-            is_moving_or_settling = (time.time() - self.last_move_time) < 0.8
+            # We wait 0.5s after a move command before processing new detections
+            # Reduced from 0.8s to improve response time
+            is_moving_or_settling = (time.time() - self.last_move_time) < 0.5
 
             if should_process_detection and not is_moving_or_settling:
                 # Detect face
