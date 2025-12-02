@@ -58,10 +58,10 @@ except ImportError:
 # ==============================================================================
 # Camera Settings
 # ==============================================================================
-# USB Webcam resolution: 640 × 480 pixels (native, no resize)
+# Camera resolution: 2688 × 2048 pixels
 # Image center is used as the target position for centering the human
-IMAGE_CENTER_X = 320.0  # cx - horizontal center of image
-IMAGE_CENTER_Y = 240.0  # cy - vertical center of image
+IMAGE_CENTER_X = 1332.58  # cx - horizontal center of image
+IMAGE_CENTER_Y = 1013.72  # cy - vertical center of image
 
 # Note: Full camera calibration (focal length, distortion) not needed because:
 # - Face size ratio is used for distance estimation (monocular vision)
@@ -80,10 +80,9 @@ class VloggerController(Node):
 
             # Priority order of camera topics to try (with leading slash for proper matching)
             camera_candidates = [
-                '/image_raw',                # USB camera (usb_cam)
                 '/camera/color/image_raw',  # RealSense/USB camera
                 '/camera/image_raw',         # Generic camera
-                '/usb_cam/image_raw',        # USB camera (alternate)
+                '/usb_cam/image_raw',        # USB camera
                 'techman_image',             # Techman vision (requires Vision_DoJob)
             ]
 
@@ -129,10 +128,6 @@ class VloggerController(Node):
         self.process_every_n_frames = 1  # Process every frame (was 3)
         self.processed_frame_count = 0
 
-        # Image processing: Use native camera resolution (no resize for USB camera)
-        # Set to None to disable resizing, or specify target width (e.g., 480)
-        self.target_width = None  # Use native resolution from camera
-
         # Image center (target position for human)
         # Will be updated based on actual image size
         self.image_center_x = 320.0
@@ -151,16 +146,14 @@ class VloggerController(Node):
         
         # Adjusted for 640x480 resolution (approx 1/4 of original 2592 width)
         self.target_face_size = 100.0  # pixels - target face size for good framing (was 400)
-        # Tolerance adjusted so robot moves closer when face < 70px
-        self.face_size_tolerance = 15.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
+        self.face_size_tolerance = 25.0  # pixels - acceptable variation (was 100)
         self.auto_distance_adjust = True  # Enable automatic distance adjustment based on face size
 
         # Movement parameters
-        # With low FPS, we want to be more precise - smaller threshold means more accurate centering
-        self.centering_threshold = 40  # pixels - tighter tolerance for accurate tracking (was 25)
+        self.centering_threshold = 25  # pixels - if human is within this, don't move (was 100)
         self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
-        # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
-        self.min_movement = 10.0  # mm - minimum movement to execute (raised from 2.0 for stability)
+        # Allow finer distance adjustments to react when face size changes
+        self.min_movement = 2.0  # mm - minimum movement to execute (lowered from 10.0)
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -198,26 +191,13 @@ class VloggerController(Node):
         # Disable expensive per-frame face-mesh landmark drawing to improve FPS
         self.draw_face_mesh = False
 
-        # CUDA acceleration flag (use for GPU-accelerated image ops if available)
-        # Note: This only accelerates OpenCV operations (resize/upload/download).
-        # MediaPipe face_mesh currently runs on CPU in this setup. GPU can still
-        # help by reducing CPU load for image resize / copy operations.
-        try:
-            self.cuda_device_count = cv2.cuda.getCudaEnabledDeviceCount()
-            self.use_cuda = self.cuda_device_count > 0
-        except Exception:
-            self.cuda_device_count = 0
-            self.use_cuda = False
-        self.get_logger().info(f'CUDA available: {self.use_cuda} (devices={self.cuda_device_count})')
-
         # Gesture commands (with debouncing)
         self.last_gesture = None
         self.gesture_cooldown = 2.0  # seconds
         self.last_gesture_time = 0.0
 
         # Smoothing for human position
-        # With low FPS (~0.3 Hz), reduce smoothing to be more responsive to each frame
-        self.position_history = deque(maxlen=2)  # Average last 2 positions only (was 5)
+        self.position_history = deque(maxlen=5)  # Average last 5 positions
 
         # FPS calculation for live view
         self.frame_count = 0
@@ -231,7 +211,7 @@ class VloggerController(Node):
         self.last_displayed_timestamp = -1.0  # Timestamp of last displayed frame (start with -1 to force initial update)
 
         # Control loop timer (10 Hz - Increased frequency for faster response)
-        self.control_timer = self.create_timer(0.2, self.control_loop)
+        self.control_timer = self.create_timer(1.0, self.control_loop)
         self.last_move_time = time.time()
         
         # Window update timer (30 Hz - keep window responsive)
@@ -323,36 +303,19 @@ class VloggerController(Node):
             else:
                 cv_image = self.bridge.imgmsg_to_cv2(data, desired_encoding='bgr8')
             
-            # Resize image for performance (optional based on target_width setting)
-            # If target_width is None, use native camera resolution
-            target_width = getattr(self, 'target_width', None)
+            # Resize image for performance (target width ~640px)
+            # Original is 2592x1944, so scale factor approx 0.25
+            # Use a smaller target width to improve FPS on low-power systems
+            target_width = getattr(self, 'target_width', 480)
+            scale = target_width / cv_image.shape[1]
+            width = int(cv_image.shape[1] * scale)
+            height = int(cv_image.shape[0] * scale)
+            dim = (width, height)
             
-            if target_width is not None:
-                # Resize to target width
-                scale = target_width / cv_image.shape[1]
-                width = int(cv_image.shape[1] * scale)
-                height = int(cv_image.shape[0] * scale)
-                dim = (width, height)
-                
-                # Perform resize (prefer GPU path if available)
-                if getattr(self, 'use_cuda', False):
-                    try:
-                        gpu_src = cv2.cuda_GpuMat()
-                        gpu_src.upload(cv_image)
-                        # Use INTER_LINEAR on GPU for speed; fallback to CPU if fails
-                        gpu_resized = cv2.cuda.resize(gpu_src, dim, interpolation=cv2.INTER_LINEAR)
-                        cv_image = gpu_resized.download()
-                    except Exception as e:
-                        # If any CUDA operation fails, fallback to CPU resize
-                        self.get_logger().warning(f'CUDA resize failed, falling back to CPU: {e}')
-                        cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
-                else:
-                    cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
+            # Perform resize
+            cv_image = cv2.resize(cv_image, dim, interpolation=cv2.INTER_AREA)
             
-            # Get actual image dimensions (after optional resize)
-            height, width = cv_image.shape[:2]
-            
-            # Update image center based on actual dimensions
+            # Update image center based on actual resized dimensions
             self.image_center_x = width / 2.0
             self.image_center_y = height / 2.0
             
@@ -366,9 +329,9 @@ class VloggerController(Node):
             should_process_detection = (self.processed_frame_count % self.process_every_n_frames == 0)
 
             # Check if robot is currently moving or settling
-            # With low FPS, wait longer to ensure robot has fully stopped
-            # This prevents detecting blurry/intermediate images
-            is_moving_or_settling = (time.time() - self.last_move_time) < 1.0
+            # We wait 0.5s after a move command before processing new detections
+            # Reduced from 0.8s to improve response time
+            is_moving_or_settling = (time.time() - self.last_move_time) < 0.5
 
             if should_process_detection and not is_moving_or_settling:
                 # Detect face
@@ -379,14 +342,12 @@ class VloggerController(Node):
                     self.position_history.append((human_x, human_y, face_size))
 
                     # Calculate smoothed position
-                    # With low FPS, use minimal smoothing (just average last 2 frames)
-                    if len(self.position_history) >= 2:
+                    if len(self.position_history) >= 3:
                         avg_x = np.mean([p[0] for p in self.position_history])
                         avg_y = np.mean([p[1] for p in self.position_history])
                         avg_size = np.mean([p[2] for p in self.position_history])
                         self.current_human_pos = (avg_x, avg_y, avg_size)
                     else:
-                        # Use first detection immediately (no waiting)
                         self.current_human_pos = (human_x, human_y, face_size)
                 else:
                     # No human detected - clear position data to prevent movement
@@ -859,9 +820,9 @@ class VloggerController(Node):
             )
 
             if move_distance > self.min_movement:
-                # Rate limit movements to prevent overloading the robot
+                # Rate limit movements (max 2 Hz)
                 current_time = time.time()
-                # Slow down to 1 movement per second to prevent robot from stopping
+                # Allow faster reaction: reduce move rate limit to 0.2s (5 Hz)
                 if current_time - self.last_move_time > 0.2:
                     self.move_robot(new_x, new_y, new_z)
                     self.last_move_time = current_time
@@ -900,9 +861,8 @@ class VloggerController(Node):
         new_z = self.current_z
 
         # Convert pixel offset to robot movement
-        # CRITICAL: Reduced scale to prevent overshooting workspace limits
-        # With 640x480 resolution and scale=0.3, max offset ~240px → ~72mm movement
-        scale = 0.3  # Conservative scaling to prevent hitting limits
+        # Increased scale to 1.0 (approx 1mm/pixel) for direct centering
+        scale = 1.0  # Scaling factor
 
         # 1. Horizontal Tracking (Image X -> Robot X, Y)
         # Human Right (Offset X > 0) -> Arm moves (-1, -1) direction
@@ -913,13 +873,14 @@ class VloggerController(Node):
         # 2. Vertical Tracking (Image Y -> Robot Z)
         # If Face is Down (Offset Y > 0), Robot must move Down (-Z)
         move_z = -1.0 * offset_y * scale
+        
+        # Clamp movement to max step size
+        # REMOVED max_step limit as requested to allow direct centering
+        # max_step = 300.0
 
-        # Safety: Limit max movement per step to prevent extreme jumps
-        max_step = 150.0  # mm maximum movement per command (conservative)
-
-        move_x = max(-max_step, min(max_step, move_x))
-        move_y = max(-max_step, min(max_step, move_y))
-        move_z = max(-max_step, min(max_step, move_z))
+        # move_x = max(-max_step, min(max_step, move_x))
+        # move_y = max(-max_step, min(max_step, move_y))
+        # move_z = max(-max_step, min(max_step, move_z))
         
         new_x += move_x
         new_y += move_y
@@ -945,29 +906,25 @@ class VloggerController(Node):
             # AUTOMATIC DISTANCE ADJUSTMENT
             if self.auto_distance_adjust and face_size > 0:
                 face_size_diff = face_size - self.target_face_size
-                
-                # Always log face size for debugging
-                self.get_logger().info(
-                    f'Face size: {face_size:.0f}px (target: {self.target_face_size:.0f}, diff: {face_size_diff:+.0f}, tolerance: {self.face_size_tolerance:.0f})'
-                )
 
                 if abs(face_size_diff) > self.face_size_tolerance:
-                    # If face too big (diff > 0), move Back (decrease X)
-                    # If face too small (diff < 0), move Forward (increase X)
-                    # Distance adjustment should ONLY affect X (depth), not Y (left/right)
-                    adjustment = face_size_diff * 2.0  # Increased to 2.0 for stronger adjustment
+                    # If face too big (diff > 0), move Back (-1, 1) direction
+                    # If face too small (diff < 0), move Forward (1, -1) direction
+                    # Increase gain so face-size changes produce noticeable robot motion.
+                    # face_size_diff is in pixels; multiplier maps it to mm adjustment.
+                    adjustment = face_size_diff * 1.0
 
-                    # Limit maximum distance adjustment to prevent extreme movements
-                    max_adjustment = 100.0  # Increased to 100mm for more range
-                    adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
+                    # REMOVED max_adjustment limit as requested
+                    # max_adjustment = 300.0
+                    # adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
-                    # ONLY adjust X for distance (forward/backward)
-                    # Do NOT adjust Y - that's only for left/right centering
-                    new_x -= adjustment  # Subtract: face too big (positive diff) -> move back (decrease X)
+                    new_x -= adjustment  # Subtract adjustment to move in correct direction
+                    new_y += adjustment  # Add adjustment to move in (1, -1) direction
 
-                    self.get_logger().info(
-                        f'>>> DISTANCE ADJUSTMENT: Moving X by {-adjustment:+.1f}mm (face {"too big - backing up" if adjustment > 0 else "too small - moving closer"})'
-                    )
+                    if abs(adjustment) > 5.0:
+                        self.get_logger().info(
+                            f'Auto-distance: face {face_size:.0f}px, adjusting X by {-adjustment:+.1f}mm, Y by {adjustment:+.1f}mm'
+                        )
 
         # Enforce workspace limits
         # X (Depth): 100mm to 600mm
@@ -991,9 +948,8 @@ class VloggerController(Node):
             ry = self.current_ry
             rz = self.current_rz
 
-            # Create movement script with safe speed limits
-            # Reduced to 60% speed and 100mm/s² acceleration for safety
-            script = f'PTP("CPP",{x:.2f},{y:.2f},{z:.2f},{rx:.2f},{ry:.2f},{rz:.2f},60,100,0,false)'
+            # Create movement script
+            script = f'PTP("CPP",{x:.2f},{y:.2f},{z:.2f},{rx:.2f},{ry:.2f},{rz:.2f},80,150,0,false)'
 
             self.get_logger().info(f'Moving: ({self.current_x:.1f}, {self.current_y:.1f}, {self.current_z:.1f}) → ({x:.1f}, {y:.1f}, {z:.1f})')
 

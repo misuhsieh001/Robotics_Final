@@ -152,7 +152,7 @@ class VloggerController(Node):
         # Adjusted for 640x480 resolution (approx 1/4 of original 2592 width)
         self.target_face_size = 100.0  # pixels - target face size for good framing (was 400)
         # Tolerance adjusted so robot moves closer when face < 70px
-        self.face_size_tolerance = 15.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
+        self.face_size_tolerance = 30.0  # pixels - tolerance (100 ± 30 = 70-130px acceptable range)
         self.auto_distance_adjust = True  # Enable automatic distance adjustment based on face size
 
         # Movement parameters
@@ -160,7 +160,7 @@ class VloggerController(Node):
         self.centering_threshold = 40  # pixels - tighter tolerance for accurate tracking (was 25)
         self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
         # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
-        self.min_movement = 10.0  # mm - minimum movement to execute (raised from 2.0 for stability)
+        self.min_movement = 5.0  # mm - minimum movement to execute (raised from 2.0 for stability)
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -945,29 +945,25 @@ class VloggerController(Node):
             # AUTOMATIC DISTANCE ADJUSTMENT
             if self.auto_distance_adjust and face_size > 0:
                 face_size_diff = face_size - self.target_face_size
-                
-                # Always log face size for debugging
-                self.get_logger().info(
-                    f'Face size: {face_size:.0f}px (target: {self.target_face_size:.0f}, diff: {face_size_diff:+.0f}, tolerance: {self.face_size_tolerance:.0f})'
-                )
 
                 if abs(face_size_diff) > self.face_size_tolerance:
-                    # If face too big (diff > 0), move Back (decrease X)
-                    # If face too small (diff < 0), move Forward (increase X)
-                    # Distance adjustment should ONLY affect X (depth), not Y (left/right)
-                    adjustment = face_size_diff * 2.0  # Increased to 2.0 for stronger adjustment
+                    # If face too big (diff > 0), move Back (-1, 1) direction
+                    # If face too small (diff < 0), move Forward (1, -1) direction
+                    # Increase gain so face-size changes produce noticeable robot motion.
+                    # face_size_diff is in pixels; multiplier maps it to mm adjustment.
+                    adjustment = face_size_diff * 0.3  # Reduced from 0.5 to 0.3 for safety
 
                     # Limit maximum distance adjustment to prevent extreme movements
-                    max_adjustment = 100.0  # Increased to 100mm for more range
+                    max_adjustment = 50.0  # Reduced from 100mm to 50mm for safety
                     adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
-                    # ONLY adjust X for distance (forward/backward)
-                    # Do NOT adjust Y - that's only for left/right centering
-                    new_x -= adjustment  # Subtract: face too big (positive diff) -> move back (decrease X)
+                    new_x -= adjustment  # Subtract adjustment to move in correct direction
+                    new_y += adjustment  # Add adjustment to move in (1, -1) direction
 
-                    self.get_logger().info(
-                        f'>>> DISTANCE ADJUSTMENT: Moving X by {-adjustment:+.1f}mm (face {"too big - backing up" if adjustment > 0 else "too small - moving closer"})'
-                    )
+                    if abs(adjustment) > 5.0:
+                        self.get_logger().info(
+                            f'Auto-distance: face {face_size:.0f}px, adjusting X by {-adjustment:+.1f}mm, Y by {adjustment:+.1f}mm'
+                        )
 
         # Enforce workspace limits
         # X (Depth): 100mm to 600mm
@@ -991,9 +987,8 @@ class VloggerController(Node):
             ry = self.current_ry
             rz = self.current_rz
 
-            # Create movement script with safe speed limits
-            # Reduced to 60% speed and 100mm/s² acceleration for safety
-            script = f'PTP("CPP",{x:.2f},{y:.2f},{z:.2f},{rx:.2f},{ry:.2f},{rz:.2f},60,100,0,false)'
+            # Create movement script
+            script = f'PTP("CPP",{x:.2f},{y:.2f},{z:.2f},{rx:.2f},{ry:.2f},{rz:.2f},80,150,0,false)'
 
             self.get_logger().info(f'Moving: ({self.current_x:.1f}, {self.current_y:.1f}, {self.current_z:.1f}) → ({x:.1f}, {y:.1f}, {z:.1f})')
 

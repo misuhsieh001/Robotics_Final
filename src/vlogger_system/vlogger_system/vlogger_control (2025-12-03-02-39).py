@@ -945,29 +945,25 @@ class VloggerController(Node):
             # AUTOMATIC DISTANCE ADJUSTMENT
             if self.auto_distance_adjust and face_size > 0:
                 face_size_diff = face_size - self.target_face_size
-                
-                # Always log face size for debugging
-                self.get_logger().info(
-                    f'Face size: {face_size:.0f}px (target: {self.target_face_size:.0f}, diff: {face_size_diff:+.0f}, tolerance: {self.face_size_tolerance:.0f})'
-                )
 
                 if abs(face_size_diff) > self.face_size_tolerance:
-                    # If face too big (diff > 0), move Back (decrease X)
-                    # If face too small (diff < 0), move Forward (increase X)
-                    # Distance adjustment should ONLY affect X (depth), not Y (left/right)
-                    adjustment = face_size_diff * 2.0  # Increased to 2.0 for stronger adjustment
+                    # If face too big (diff > 0), move Back (-1, 1) direction
+                    # If face too small (diff < 0), move Forward (1, -1) direction
+                    # Increase gain so face-size changes produce noticeable robot motion.
+                    # face_size_diff is in pixels; multiplier maps it to mm adjustment.
+                    adjustment = face_size_diff * 1.0  # Increased from 0.3 to 1.0 for more noticeable adjustment
 
                     # Limit maximum distance adjustment to prevent extreme movements
-                    max_adjustment = 100.0  # Increased to 100mm for more range
+                    max_adjustment = 50.0  # Increased from 50mm to 100mm for more range
                     adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
-                    # ONLY adjust X for distance (forward/backward)
-                    # Do NOT adjust Y - that's only for left/right centering
-                    new_x -= adjustment  # Subtract: face too big (positive diff) -> move back (decrease X)
+                    new_x -= adjustment  # Subtract adjustment to move in correct direction
+                    new_y += adjustment  # Add adjustment to move in (1, -1) direction
 
-                    self.get_logger().info(
-                        f'>>> DISTANCE ADJUSTMENT: Moving X by {-adjustment:+.1f}mm (face {"too big - backing up" if adjustment > 0 else "too small - moving closer"})'
-                    )
+                    if abs(adjustment) > 5.0:
+                        self.get_logger().info(
+                            f'Auto-distance: face {face_size:.0f}px, adjusting X by {-adjustment:+.1f}mm, Y by {adjustment:+.1f}mm'
+                        )
 
         # Enforce workspace limits
         # X (Depth): 100mm to 600mm

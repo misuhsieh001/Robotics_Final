@@ -1,19 +1,39 @@
-# Vlogger Camera Diagnostic Guide
+# Camera Diagnostic Guide (LEGACY - Techman Camera)
 
-## Issue Summary
-The vlogger window shows "Initializing camera..." but never displays live images, even though images appear in TMFlow.
+> **⚠️ NOTE:** This document describes the **old Techman built-in camera** system that was replaced by USB webcam.  
+> **For current USB camera setup, see [USB_CAMERA_UPGRADE.md](USB_CAMERA_UPGRADE.md)**
 
-## Root Cause
+---
+
+## Historical Context
+
+This diagnostic guide was created when the vlogger used the TM5-900's built-in Techman camera via Vision_DoJob service calls. The system achieved only ~0.3 FPS due to the 3-second service call latency.
+
+**Status:** 🗄️ Deprecated - Replaced by USB webcam (30 FPS)  
+**Kept for:** Reference and understanding original system architecture
+
+---
+
+## Original Issue Summary
+The vlogger window showed "Initializing camera..." but never displayed live images, even though images appeared in TMFlow.
+
+## Root Cause (Historical)
 The TM5-900 camera **does not publish images continuously**. It only publishes when triggered by the `Vision_DoJob(job1)` command (as seen in `cube_stacker_logic.py` line 431).
 
-## Solution Implemented
+## Solution Implemented (Then Deprecated)
 Added automatic camera triggering at 10 Hz in `vlogger_control.py`:
 - Line 163: Camera trigger timer created
 - Line 372-395: `trigger_camera_capture()` function sends `Vision_DoJob(job1)` every 100ms
 
-## Diagnostic Output to Watch For
+**Problem:** Even with triggering, frame rate was limited to ~0.3 FPS (one frame every 3+ seconds)
 
-When you run the vlogger, you should see:
+**Final Solution:** Migrated to USB webcam achieving 30 FPS ✅
+
+---
+
+## Legacy Diagnostic Output
+
+When running the old Techman camera system, you would see:
 
 ### 1. Initialization
 ```
