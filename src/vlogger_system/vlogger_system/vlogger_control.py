@@ -14,7 +14,7 @@ This system uses the TM5-900 robot arm as an automated vlogger that:
 
 import rclpy
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
+from rclpy.qos import QoSProfile, ReliabilityPolicy, HistoryPolicy
 import time
 import sys
 import math
@@ -104,13 +104,29 @@ class VloggerController(Node):
         self.camera_topic = self.detect_camera_topic()
         self.get_logger().info(f'Using camera topic: {self.camera_topic}')
 
+        # Use a custom QoS profile for best performance and lowest latency
+        # Reliability: BEST_EFFORT (drop packets if network is slow)
+        # History: KEEP_LAST (only keep the latest messages)
+        # Depth: 1 (only keep the very latest message, drop everything else)
+        qos_profile = QoSProfile(
+            reliability=ReliabilityPolicy.BEST_EFFORT,
+            history=HistoryPolicy.KEEP_LAST,
+            depth=1
+        )
+
         self.subscription = self.create_subscription(
             Image,
             self.camera_topic,
             self.image_callback,
-            10)
+            qos_profile)
 
         self.bridge = CvBridge()
+
+        # Performance optimization: Frame skipping
+        # Only process every Nth frame to reduce CPU load
+        # For responsive behavior, process every frame by default. Increase this if CPU bound.
+        self.process_every_n_frames = 1  # Process every frame (was 3)
+        self.processed_frame_count = 0
 
         # Image center (target position for human)
         # Will be updated based on actual image size
@@ -170,6 +186,10 @@ class VloggerController(Node):
             )
             self.mp_drawing = mp.solutions.drawing_utils
 
+        # Performance tuning flags
+        # Disable expensive per-frame face-mesh landmark drawing to improve FPS
+        self.draw_face_mesh = False
+
         # Gesture commands (with debouncing)
         self.last_gesture = None
         self.gesture_cooldown = 2.0  # seconds
@@ -190,7 +210,8 @@ class VloggerController(Node):
         self.last_displayed_timestamp = -1.0  # Timestamp of last displayed frame (start with -1 to force initial update)
 
         # Control loop timer (5 Hz - optimized from 10 Hz since movements are rate-limited to 2 Hz)
-        self.control_timer = self.create_timer(0.2, self.control_loop)
+        # Increase control loop frequency for faster reaction (10 Hz)
+        self.control_timer = self.create_timer(0.1, self.control_loop)
         self.last_move_time = time.time()
         
         # Window update timer (30 Hz - keep window responsive)
@@ -264,14 +285,10 @@ class VloggerController(Node):
 
     def image_callback(self, data):
         """Process incoming image to detect human and gestures"""
-        # Count and log first image received (only once)
+        # Count first image received (only log first arrival)
         self.image_count += 1
-
-        # ALWAYS log to diagnose
-        self.get_logger().info(f'📸 IMAGE RECEIVED #{self.image_count}: {data.width}x{data.height}, encoding={data.encoding}')
-
         if not self.first_image_received:
-            self.get_logger().info('✅ ✅ ✅ FIRST IMAGE SUCCESSFULLY RECEIVED! ✅ ✅ ✅')
+            self.get_logger().info(f'📸 FIRST IMAGE RECEIVED: {data.width}x{data.height}, encoding={data.encoding}')
             self.first_image_received = True
 
         # Mark that we received an image
@@ -288,7 +305,8 @@ class VloggerController(Node):
             
             # Resize image for performance (target width ~640px)
             # Original is 2592x1944, so scale factor approx 0.25
-            target_width = 640
+            # Use a smaller target width to improve FPS on low-power systems
+            target_width = getattr(self, 'target_width', 480)
             scale = target_width / cv_image.shape[1]
             width = int(cv_image.shape[1] * scale)
             height = int(cv_image.shape[0] * scale)
@@ -306,22 +324,39 @@ class VloggerController(Node):
             # Create display image
             display_image = cv_image.copy()
 
-            # Detect face
-            human_detected, human_x, human_y, face_size = self.detect_human(cv_image, display_image)
+            # Frame skipping for detection (configurable)
+            self.processed_frame_count += 1
+            should_process_detection = (self.processed_frame_count % self.process_every_n_frames == 0)
 
-            if human_detected:
-                # Update position with smoothing
-                self.position_history.append((human_x, human_y, face_size))
+            if should_process_detection:
+                # Detect face
+                human_detected, human_x, human_y, face_size = self.detect_human(cv_image, display_image)
 
-                # Calculate smoothed position
-                if len(self.position_history) >= 3:
-                    avg_x = np.mean([p[0] for p in self.position_history])
-                    avg_y = np.mean([p[1] for p in self.position_history])
-                    avg_size = np.mean([p[2] for p in self.position_history])
-                    self.current_human_pos = (avg_x, avg_y, avg_size)
+                if human_detected:
+                    # Update position with smoothing
+                    self.position_history.append((human_x, human_y, face_size))
+
+                    # Calculate smoothed position
+                    if len(self.position_history) >= 3:
+                        avg_x = np.mean([p[0] for p in self.position_history])
+                        avg_y = np.mean([p[1] for p in self.position_history])
+                        avg_size = np.mean([p[2] for p in self.position_history])
+                        self.current_human_pos = (avg_x, avg_y, avg_size)
+                    else:
+                        self.current_human_pos = (human_x, human_y, face_size)
                 else:
-                    self.current_human_pos = (human_x, human_y, face_size)
+                    # No human detected - clear position data to prevent movement
+                    self.current_human_pos = None
+                    self.position_history.clear()  # Clear history to prevent stale data
 
+                # Detect gestures (if enabled)
+                if self.gesture_mode:
+                    gesture = self.detect_gesture(cv_image, display_image)
+            
+            # Always draw overlay based on current state (even if detection was skipped this frame)
+            if self.current_human_pos:
+                human_x, human_y, face_size = self.current_human_pos
+                
                 # Draw target center
                 cv2.circle(display_image,
                           (int(self.image_center_x), int(self.image_center_y)),
@@ -351,17 +386,11 @@ class VloggerController(Node):
                 cv2.putText(display_image, f"Distance: {auto_status}",
                           (10, 90), cv2.FONT_HERSHEY_SIMPLEX, 0.7, status_color, 2)
             else:
-                # No human detected - clear position data to prevent movement
-                self.current_human_pos = None
-                self.position_history.clear()  # Clear history to prevent stale data
                 cv2.putText(display_image, "NO HUMAN DETECTED",
                           (10, 30), cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 2)
 
-            # Detect gestures (if enabled)
-            if self.gesture_mode:
-                gesture = self.detect_gesture(cv_image, display_image)
-                if gesture:
-                    cv2.putText(display_image, f"Gesture: {gesture}",
+            if self.gesture_mode and self.last_gesture and (time.time() - self.last_gesture_time < self.gesture_cooldown):
+                 cv2.putText(display_image, f"Gesture: {self.last_gesture}",
                               (10, 120), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (255, 0, 255), 2)
 
             # Calculate and display FPS
@@ -401,11 +430,12 @@ class VloggerController(Node):
                        (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
             # Store the display image for window update timer with thread-safe lock
-            self.get_logger().info('Storing display image for window update...')
+            # Use debug-level logs here to avoid spamming the logger at INFO for every frame
+            self.get_logger().debug('Storing display image for window update')
             with self.image_lock:
                 self.latest_display_image = display_image.copy()
                 self.latest_frame_timestamp = time.time()
-            self.get_logger().info(f'✅ Image stored! Timestamp: {self.latest_frame_timestamp}')
+            self.get_logger().debug(f'Image stored. Timestamp: {self.latest_frame_timestamp}')
 
         except Exception as e:
             self.get_logger().error(f'❌ ERROR in image callback: {str(e)}')
@@ -440,9 +470,8 @@ class VloggerController(Node):
                         rclpy.shutdown()
                     return
 
-                # Make a copy for display
-                self.get_logger().info(f'🖼️  NEW FRAME TO DISPLAY! Timestamp: {self.latest_frame_timestamp}')
-                display_image = self.latest_display_image.copy()
+                    # Make a copy for display
+                    display_image = self.latest_display_image.copy()
                 frame_age = time.time() - self.latest_frame_timestamp
                 self.last_displayed_timestamp = self.latest_frame_timestamp
 
@@ -454,9 +483,7 @@ class VloggerController(Node):
                        (w - 250, 30), cv2.FONT_HERSHEY_SIMPLEX, 0.6, freshness_color, 2)
 
             # Display the image
-            self.get_logger().info('📺 Calling cv2.imshow() to display image...')
             cv2.imshow('Vlogger View', display_image)
-            self.get_logger().info('✅ cv2.imshow() completed!')
 
             # Handle keyboard input (must be called regularly to keep window alive)
             key = cv2.waitKey(1) & 0xFF
@@ -499,11 +526,9 @@ class VloggerController(Node):
                 self._capture_in_progress = False
                 return False
 
-            # Count triggers for diagnostics
+            # Count triggers for diagnostics (only log sparingly)
             self.camera_trigger_count += 1
-
-            # Log first few triggers and every 10 triggers
-            if self.camera_trigger_count <= 5 or self.camera_trigger_count % 10 == 0:
+            if self.camera_trigger_count <= 2 or self.camera_trigger_count % 20 == 0:
                 self.get_logger().info(f'📷 Capturing frame #{self.camera_trigger_count}...')
 
             # Send Vision_DoJob command to trigger camera capture
@@ -615,13 +640,14 @@ class VloggerController(Node):
                 cv2.rectangle(display_image, (x_min, y_min), (x_max, y_max), (255, 0, 0), 3)
                 cv2.circle(display_image, (int(center_x), int(center_y)), 5, (0, 0, 255), -1)
 
-                # Draw Face Mesh landmarks (optional, but helpful for debugging)
-                self.mp_drawing.draw_landmarks(
-                    display_image,
-                    face_landmarks,
-                    self.mp_face_mesh.FACEMESH_CONTOURS,
-                    self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
-                    self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1))
+                # Draw Face Mesh landmarks (optional, expensive). Only draw when enabled.
+                if getattr(self, 'draw_face_mesh', False):
+                    self.mp_drawing.draw_landmarks(
+                        display_image,
+                        face_landmarks,
+                        self.mp_face_mesh.FACEMESH_CONTOURS,
+                        self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1),
+                        self.mp_drawing.DrawingSpec(color=(0, 255, 0), thickness=1, circle_radius=1))
                 
                 return True, center_x, center_y, face_size_width
 
@@ -776,7 +802,8 @@ class VloggerController(Node):
             if move_distance > self.min_movement:
                 # Rate limit movements (max 2 Hz)
                 current_time = time.time()
-                if current_time - self.last_move_time > 0.5:
+                # Allow faster reaction: reduce move rate limit to 0.2s (5 Hz)
+                if current_time - self.last_move_time > 0.2:
                     self.move_robot(new_x, new_y, new_z)
                     self.last_move_time = current_time
 
