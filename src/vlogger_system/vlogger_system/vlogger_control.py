@@ -875,12 +875,12 @@ class VloggerController(Node):
         move_z = -1.0 * offset_y * scale
         
         # Clamp movement to max step size
-        # Increased to 300.0 to allow single-step centering
-        max_step = 300.0
+        # REMOVED max_step limit as requested to allow direct centering
+        # max_step = 300.0
 
-        move_x = max(-max_step, min(max_step, move_x))
-        move_y = max(-max_step, min(max_step, move_y))
-        move_z = max(-max_step, min(max_step, move_z))
+        # move_x = max(-max_step, min(max_step, move_x))
+        # move_y = max(-max_step, min(max_step, move_y))
+        # move_z = max(-max_step, min(max_step, move_z))
         
         new_x += move_x
         new_y += move_y
@@ -914,8 +914,9 @@ class VloggerController(Node):
                     # face_size_diff is in pixels; multiplier maps it to mm adjustment.
                     adjustment = face_size_diff * 1.0
 
-                    max_adjustment = 300.0
-                    adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
+                    # REMOVED max_adjustment limit as requested
+                    # max_adjustment = 300.0
+                    # adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
                     new_x -= adjustment  # Subtract adjustment to move in correct direction
                     new_y += adjustment  # Add adjustment to move in (1, -1) direction
