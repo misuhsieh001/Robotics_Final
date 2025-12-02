@@ -210,9 +210,8 @@ class VloggerController(Node):
         self.latest_frame_timestamp = 0.0  # Timestamp of latest frame
         self.last_displayed_timestamp = -1.0  # Timestamp of last displayed frame (start with -1 to force initial update)
 
-        # Control loop timer (5 Hz - optimized from 10 Hz since movements are rate-limited to 2 Hz)
-        # Increase control loop frequency for faster reaction (10 Hz)
-        self.control_timer = self.create_timer(0.1, self.control_loop)
+        # Control loop timer (1 Hz - User requested movement every 1 second)
+        self.control_timer = self.create_timer(1.0, self.control_loop)
         self.last_move_time = time.time()
         
         # Window update timer (30 Hz - keep window responsive)
