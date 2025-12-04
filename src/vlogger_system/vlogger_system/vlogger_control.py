@@ -147,20 +147,23 @@ class VloggerController(Node):
         # Distance estimation using face size (monocular vision)
         # Average human face width: ~150mm
         # Using similar triangles: face_size_pixels = (face_width_mm * focal_length) / distance_mm
-        self.average_face_width_mm = 150.0  # mm - average adult face width
+        self.average_face_width_mm = 200.0  # mm - average adult face width
         
         # Adjusted for 640x480 resolution (approx 1/4 of original 2592 width)
-        self.target_face_size = 100.0  # pixels - target face size for good framing (was 400)
+        self.target_face_size = 120.0  # pixels - target face size for good framing (was 400)
         # Tolerance adjusted so robot moves closer when face < 70px
-        self.face_size_tolerance = 15.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
+        self.face_size_tolerance = 20.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
         self.auto_distance_adjust = True  # Enable automatic distance adjustment based on face size
 
         # Movement parameters
         # With low FPS, we want to be more precise - smaller threshold means more accurate centering
-        self.centering_threshold = 40  # pixels - tighter tolerance for accurate tracking (was 25)
-        self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
+        self.centering_threshold = 20  # pixels - tighter tolerance for accurate tracking (was 25)
         # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
-        self.min_movement = 10.0  # mm - minimum movement to execute (raised from 2.0 for stability)
+        self.min_movement = 20.0  # mm - minimum movement to execute (raised from 2.0 for stability)
+        
+    # Movement scaling (keep a single tuned scale for stability)
+    # Use the tuned value (previously 0.3) to avoid aggressive overshoot
+    # self.movement_scale = 0.3
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -888,7 +891,7 @@ class VloggerController(Node):
     def calculate_new_position(self, offset_x, offset_y, face_size, gesture_command):
         """
         Calculate new robot position based on human position and gestures.
-        
+
         MAPPING (Standard Robot Frame):
         - Image X (Horizontal) -> Robot Y (Left/Right)
         - Image Y (Vertical)   -> Robot Z (Up/Down)
@@ -899,10 +902,9 @@ class VloggerController(Node):
         new_y = self.current_y
         new_z = self.current_z
 
-        # Convert pixel offset to robot movement
-        # CRITICAL: Reduced scale to prevent overshooting workspace limits
-        # With 640x480 resolution and scale=0.3, max offset ~240px → ~72mm movement
-        scale = 0.3  # Conservative scaling to prevent hitting limits
+        # Use fixed tuned scale to avoid overshoot (empirically stable)
+        # 0.35 = slight improvement over 0.3 (less segmented) while avoiding overshoot
+        scale = 0.32
 
         # 1. Horizontal Tracking (Image X -> Robot X, Y)
         # Human Right (Offset X > 0) -> Arm moves (-1, -1) direction
@@ -914,13 +916,6 @@ class VloggerController(Node):
         # If Face is Down (Offset Y > 0), Robot must move Down (-Z)
         move_z = -1.0 * offset_y * scale
 
-        # Safety: Limit max movement per step to prevent extreme jumps
-        max_step = 150.0  # mm maximum movement per command (conservative)
-
-        move_x = max(-max_step, min(max_step, move_x))
-        move_y = max(-max_step, min(max_step, move_y))
-        move_z = max(-max_step, min(max_step, move_z))
-        
         new_x += move_x
         new_y += move_y
         new_z += move_z

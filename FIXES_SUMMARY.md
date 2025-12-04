@@ -227,6 +227,21 @@ delta_y = dy * scale
 
 ---
 
+### ✅ Issue 13: NumPy 2.x Compatibility Error
+**Problem:** Segmentation fault with error "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.2.6"
+
+**Root Cause:** System had NumPy 2.2.6 installed, but cv_bridge and OpenCV were compiled against NumPy 1.x
+
+**Solution:** Downgrade system NumPy to 1.x
+
+```bash
+pip3 install "numpy<2" --force-reinstall --break-system-packages
+```
+
+**Result:** ✅ NumPy 1.26.4 installed, cv_bridge working correctly
+
+---
+
 ## 🎯 Current System Configuration
 
 ### Hardware
@@ -239,6 +254,7 @@ delta_y = dy * scale
 - **Camera Node:** ros-jazzy-usb-cam
 - **Vision:** MediaPipe v0.10.21 (Face Mesh + Hands)
 - **Python:** 3.12
+- **NumPy:** 1.26.4 (must be <2.0 for cv_bridge compatibility)
 - **OpenCV:** Latest with window management fixes
 
 ### Key Parameters

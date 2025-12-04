@@ -321,6 +321,19 @@ pkill -f usb_cam_node_exe
 ros2 run usb_cam usb_cam_node_exe --ros-args --param video_device:=/dev/video0
 ```
 
+### NumPy Compatibility Error
+```bash
+# Error: "A module that was compiled using NumPy 1.x cannot be run in NumPy 2.x"
+# This happens when system has NumPy 2.x but cv_bridge needs NumPy 1.x
+
+# Fix: Downgrade to NumPy 1.x
+pip3 install "numpy<2" --force-reinstall --break-system-packages
+
+# Verify version
+python3 -c "import numpy; print(numpy.__version__)"
+# Should show: 1.26.4 or similar (1.x version)
+```
+
 ### MediaPipe Not Available
 ```bash
 # Verify MediaPipe is installed in venv
@@ -410,6 +423,7 @@ All debug information is logged to the console automatically.
 ## 📚 Additional Documentation
 
 - **[USB_CAMERA_UPGRADE.md](USB_CAMERA_UPGRADE.md)** - Complete USB camera setup guide (0.3 FPS → 30 FPS upgrade)
+- **[NUMPY_FIX.md](NUMPY_FIX.md)** - NumPy 2.x compatibility fix (critical for cv_bridge)
 - **[FIXES_SUMMARY.md](FIXES_SUMMARY.md)** - Complete development history and all fixes applied
 - **[SAFETY_FEATURES.md](SAFETY_FEATURES.md)** - Detailed safety mechanism documentation
 - **[CAMERA_DIAGNOSTIC.md](CAMERA_DIAGNOSTIC.md)** - Legacy Techman camera troubleshooting (deprecated)
