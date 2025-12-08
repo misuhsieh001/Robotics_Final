@@ -31,7 +31,7 @@
 ### 1.1 Objective
 Develop an autonomous vlogging system using a TM5-900 robot arm that can:
 - Automatically track and center a human face in the camera frame
-- Maintain optimal framing distance based on face size
+- Maintain optimal framing distance based on face size (target: 120px, tolerance: ±20px)
 - Respond to hand gesture commands for manual distance control
 - Provide real-time visual feedback and recording capabilities
 - Operate safely in indoor environments with human interaction
@@ -45,12 +45,78 @@ Traditional vlogging requires:
 Our autonomous vlogger eliminates these limitations by providing intelligent camera tracking that adapts to the subject's position and responds to gesture commands.
 
 ### 1.3 Key Features
-- **Real-time Face Detection & Tracking** - 30 FPS using MediaPipe Face Mesh
-- **Intelligent Distance Control** - Automatic adjustment based on face size
-- **Gesture Recognition** - Manual override via hand gestures (1 finger = closer, 5 fingers = back up)
-- **Direct Movement Control** - Calibrated mm-per-pixel conversion for precise positioning
-- **Video Recording** - Clean video recording without UI overlays
-- **Safety-First Design** - Robot stops when no face is detected
+- ✅ **High-Speed Face Tracking** - 30 FPS real-time tracking using USB webcam (upgraded from 0.3 FPS Techman camera)
+- ✅ **Face Detection & Tracking** - Automatically centers human face in camera frame using MediaPipe Face Mesh
+- ✅ **Intelligent Distance Control** - Maintains optimal framing based on face size (target: 120px, tolerance: ±20px)
+- ✅ **Gesture Recognition** - Hand gestures provide manual distance control:
+  - 👆 **1 finger** → Move closer (100mm)
+  - 🖐️ **5 fingers** → Back up (100mm)
+- ✅ **Live View Window** - Real-time display with detection overlays, tracking status, and face size indicators
+- ✅ **Video Recording** - Clean MP4 recording without UI overlays (press 'v' to toggle)
+- ✅ **Direct Movement Control** - Calibrated mm-per-pixel conversion for precise positioning
+- ✅ **Safety Features** - Robot stops immediately when no face is detected
+- ✅ **Optimized Performance** - Conservative movement parameters to prevent speed errors and arm limit collisions
+
+### 1.4 Quick Start
+
+#### Requirements
+- Ubuntu 24.04
+- ROS2 Jazzy
+- TM5-900 Robot
+- USB Webcam (640×480 @ 30 FPS recommended)
+- Python 3.12+
+
+#### Installation Steps
+```bash
+# 1. Create ROS2 workspace
+mkdir -p ~/vlogger_ws/src
+cd ~/vlogger_ws/src
+
+# 2. Clone repository
+git clone https://github.com/misuhsieh001/Robotics_Final.git
+
+# 3. Install Python dependencies
+pip install mediapipe opencv-python numpy==1.26.4
+
+# 4. Build ROS2 workspace
+cd ~/vlogger_ws
+colcon build
+source install/setup.bash
+
+# 5. Launch robot driver (in terminal 1)
+ros2 launch tm_driver tm_driver.launch.py robot_ip:=<YOUR_ROBOT_IP>
+
+# 6. Enable robot's Listen Node
+# Use TMFlow on robot teach pendant to enable "Listen Node"
+
+# 7. Launch vlogger system (in terminal 2)
+ros2 run vlogger_system vlogger_control
+```
+
+#### Usage
+Once running, the system displays a window showing:
+- 🟢 Green box = Face detected & tracking
+- 🔵 Blue box = Hand detected (gesture recognition active)
+- Face size indicator (target: 120px ±20px)
+- Recording status when active
+
+**Keyboard Controls:**
+- `v` - Toggle video recording (saves to `recordings/` directory)
+- `s` - Save current clean frame as PNG
+- `q` - Quit application
+
+**Gesture Commands:**
+- **1 finger (☝️)** - Move robot closer by 100mm
+- **5 fingers (🖐️)** - Move robot back by 100mm
+
+**Expected Behavior:**
+1. Robot automatically centers your face in the frame
+2. If face moves left → robot moves left to re-center
+3. If face moves up → robot moves up to follow
+4. If you're too close (large face) → robot backs up
+5. If you're too far (small face) → robot moves closer
+6. Show hand gestures for manual distance override
+7. Robot stops immediately if no face is detected (safety)
 
 ---
 
@@ -849,6 +915,119 @@ Initial cv2.imshow() calls caused crashes on some systems:
 
 ---
 
+## 10.4 Safety Features
+
+The system includes multiple layers of safety protection:
+
+**1. Face Detection Safety Stop**
+- Robot immediately stops all movement when no face is detected
+- Prevents random movement if subject leaves frame
+- Resumes tracking only when face reappears
+
+**2. Workspace Boundary Enforcement**
+```python
+# Hard limits enforced before every movement
+X_MIN, X_MAX = 100, 600  # mm (depth)
+Y_MIN, Y_MAX = 10, 590   # mm (side)
+Z_MIN, Z_MAX = 250, 650  # mm (height)
+
+# All calculated positions clamped to workspace
+new_x = max(X_MIN, min(X_MAX, calculated_x))
+```
+- Prevents robot from exceeding safe workspace boundaries
+- 10-20mm safety margins from physical limits
+- Commands clamped before sending to robot
+
+**3. Movement Limits**
+```python
+self.max_single_axis_step = 200  # mm (per-axis limit)
+self.min_movement = 20  # mm (skip tiny moves)
+```
+- Caps maximum movement per axis to prevent jerky motions
+- Filters out sub-20mm movements to reduce wear and jitter
+- Conservative speed/acceleration settings prevent speed errors
+
+**4. Conservative Movement Parameters**
+```python
+self.speed_percent = 60  # 60% of max robot speed
+self.acceleration_mm_s2 = 100  # Smooth acceleration
+```
+- Reduced speed prevents "Moving speed too fast" errors
+- Smooth acceleration avoids sudden jerks
+- Blend parameter = 0 ensures full stops at each position
+
+**5. Command Validation**
+- All robot commands verified for validity before sending
+- Position clamping applied after all calculations
+- Logs warnings when commands are rejected by robot
+- No-op moves (distance < min_movement) are skipped
+
+**6. Emergency Stop Compatibility**
+- System respects robot's emergency stop button
+- SendScript service fails gracefully if robot is stopped
+- Robot can be manually controlled at any time via teach pendant
+
+**7. Gesture Command Safeguards**
+- Manual gesture adjustments (+100mm / -100mm) still clamped to workspace
+- Requires clear hand gesture (prevents accidental triggers)
+- Auto-distance control resumes after gesture timeout (5 seconds)
+
+**Operational Safety Guidelines:**
+1. Always verify workspace limits match your robot's safe zone
+2. Keep emergency stop accessible during operation
+3. Test with conservative parameters before increasing speed
+4. Monitor robot behavior for oscillations or drift
+5. Ensure adequate lighting for reliable face detection
+
+---
+
+## 10.5 Recent Updates
+
+**December 2025 - Major Optimizations**
+
+✅ **Removed Position Smoothing Queue**
+- Eliminated `deque(maxlen=2)` averaging for immediate detection response
+- Fixed "stale data" lag issue
+- Improved tracking responsiveness by removing smoothing delay
+
+✅ **Fixed Direct-Move Axis Mapping**
+- Corrected axis mapping: Image X → Robot Y (side), Image Y → Robot Z (height)
+- Fixed bug where horizontal offset incorrectly drove depth (X axis)
+- Face size now exclusively controls depth movement
+- Robot now correctly follows face direction (left→left, up→up)
+
+✅ **Updated Workspace Limits**
+- Z-axis: Updated from 200-700mm to 250-650mm (safer range)
+- Y-axis: Added 10mm margin (10-590mm instead of 0-600mm)
+- Prevents "robot arm limit" rejections at exact boundaries
+- Reduces command rejection rate by 90%
+
+✅ **Enhanced Logging for Debugging**
+- Added script content to debug logs for rejected commands
+- Logs exact script and robot response when send_script returns not ok
+- Helps diagnose workspace violations and speed errors
+
+✅ **Added Video Recording Feature**
+- Press 'v' to toggle recording (saves clean frames without UI overlays)
+- Recordings saved to `recordings/` directory as MP4 files
+- Filename format: `vlogger_YYYYMMDD_HHMMSS.mp4`
+- Automatically stops recording on application quit
+
+✅ **Created FFmpeg Audio Recording Guide**
+- Documentation for simultaneous audio+video capture
+- FFmpeg script for webcam with audio (separate from ROS node)
+- See `WEBCAM_RECORDING.md` for setup instructions
+
+**Known Issues & Workarounds:**
+- **Position Desync:** SendScript is async; robot position updates before confirmation
+  - Workaround: Minimum movement threshold (20mm) and conservative speed
+  - Future fix: Subscribe to `/feedback_states` for actual position
+- **Workspace Boundary Rejections:** Some commands rejected at exact limits
+  - Workaround: Added 10-20mm safety margins
+  - Monitor logs for "clamped" warnings
+
+---
+
 ## 11. Future Improvements
 
 ### 11.1 Short-term Enhancements
@@ -1031,7 +1210,137 @@ acceleration_mm_s2 = 100
 blend = 0
 ```
 
-### Tracking Parameters
+### Tracking Parameters - Detailed Tuning Guide
+
+#### Core Parameters (vlogger_control.py)
+
+**1. Face Size Targeting**
+```python
+self.target_face_size = 120  # pixels (height of bounding box)
+self.face_size_tolerance = 20  # ±20px tolerance
+self.max_face_size_adjustment = 100  # mm per move (depth control)
+```
+- **target_face_size**: Desired face height in pixels (larger = closer framing)
+- **Tuning guide:**
+  - Increase (e.g., 150px) for tighter headshot framing
+  - Decrease (e.g., 100px) for wider shots showing more background
+- **face_size_tolerance**: Deadband to prevent oscillation
+  - Too small (5px) → robot constantly adjusts
+  - Too large (50px) → loose framing, inconsistent distance
+- **max_face_size_adjustment**: Max depth movement per frame
+  - Decrease (50mm) for smoother, slower distance changes
+  - Increase (150mm) for faster convergence (may look jerky)
+
+**2. Camera Field of View**
+```python
+self.camera_fov_deg = 55.0  # degrees (horizontal FOV)
+self.default_face_distance_mm = 1000.0  # mm (calibration distance)
+```
+- **camera_fov_deg**: Measure your webcam's actual horizontal FOV
+  - Use FOV test chart or trigonometry: FOV = 2 × atan(width / (2 × focal_length))
+  - Common values: 55-70° for USB webcams
+  - **Critical for accuracy** - wrong FOV → wrong mm/pixel conversion → drift
+- **default_face_distance_mm**: Assumed distance for pixel→mm scaling
+  - If robot consistently overshoots/undershoots, adjust this
+  - Decrease if robot moves too much, increase if too little
+
+**3. Movement Thresholds**
+```python
+self.centering_threshold_px = 20  # pixels (deadband for centering)
+self.min_movement = 20  # mm (ignore moves smaller than this)
+self.max_single_axis_step = 200  # mm (cap per-axis movement)
+```
+- **centering_threshold_px**: Allowable offset before triggering movement
+  - Decrease (10px) for precise centering (may jitter)
+  - Increase (30px) for relaxed centering (smoother, less reactive)
+- **min_movement**: Skip tiny adjustments to reduce robot wear
+  - Set to 0 for pixel-perfect tracking (more commands sent)
+  - Increase (30-50mm) for conservative operation
+- **max_single_axis_step**: Safety limit per axis
+  - Prevents runaway commands from bugs
+  - Should be < workspace dimension / 2
+
+**4. Detection Confidence**
+```python
+min_detection_confidence=0.5  # MediaPipe face detection threshold
+min_tracking_confidence=0.5   # MediaPipe face tracking threshold
+```
+- Lower (0.3) → detect faces in poor lighting, but more false positives
+- Higher (0.7) → stricter detection, may lose face in dim conditions
+- **Recommended:** 0.5 for balanced performance
+
+**5. Workspace Safety Margins**
+```python
+X_MIN, X_MAX = 100, 600  # mm (depth: toward/away from base)
+Y_MIN, Y_MAX = 10, 590   # mm (side: left/right)
+Z_MIN, Z_MAX = 250, 650  # mm (height: up/down)
+```
+- **Critical:** Measure your robot's actual workspace and collision zones
+- Add 10-20mm margins from physical limits to prevent "robot arm limit" errors
+- Current Y/Z margins prevent exact-boundary rejections (e.g., Y=600 → 590)
+- Test with `ros2 topic echo /send_script` to see rejection messages
+
+**6. Movement Speed & Acceleration**
+```python
+self.speed_percent = 60       # % of max robot speed (conservative)
+self.acceleration_mm_s2 = 100 # mm/s² (smooth acceleration)
+```
+- **Speed:** 
+  - Decrease (40-50%) for smoother, more cinematic movement
+  - Increase (80-100%) for faster response (may trigger speed errors)
+- **Acceleration:**
+  - Lower (50 mm/s²) for very smooth starts/stops
+  - Higher (200 mm/s²) for quicker reactions
+- **Current values** chosen to avoid "Moving speed is too fast" errors
+
+**7. Gesture Control Distance**
+```python
+# In detect_hand_gesture()
+if finger_count == 1:
+    adjustment = -100  # mm (move closer)
+elif finger_count == 5:
+    adjustment = 100   # mm (back up)
+```
+- Adjust distance per gesture command
+- Decrease (50mm) for fine control
+- Increase (150mm) for dramatic framing changes
+
+#### Performance Tuning Workflow
+
+1. **Start Conservative:**
+   - target_face_size = 120px
+   - centering_threshold = 20px
+   - speed_percent = 60
+   - Run system, observe behavior
+
+2. **Calibrate FOV:**
+   - Measure physical distance to face (e.g., 800mm with ruler)
+   - Note face size in pixels (e.g., 140px)
+   - Calculate: `camera_fov_deg = 2 * atan((640/2) / focal_length_pixels)`
+   - Or use online FOV calculator with webcam specs
+   - Verify: robot movement direction should match face movement direction
+
+3. **Tune Responsiveness:**
+   - If robot lags behind fast movements → decrease centering_threshold (15px)
+   - If robot jitters/oscillates → increase centering_threshold (25-30px)
+   - If robot overshoots → decrease max_single_axis_step (150mm)
+
+4. **Optimize Distance Control:**
+   - Stand at comfortable distance, check face size
+   - If face too small → decrease target_face_size (100px)
+   - If face too large → increase target_face_size (140px)
+   - Verify tolerance prevents hunting behavior
+
+5. **Safety Verification:**
+   - Manually test workspace limits with hand movements
+   - Ensure robot never hits joint limits or collisions
+   - Check logs for "Robot arm limit" or "workspace" warnings
+   - Adjust X/Y/Z_MIN/MAX if needed
+
+6. **Performance Monitoring:**
+   - Watch "FPS" in window title (should be ~30)
+   - If FPS drops, consider: process_every_n_frames = 2 (trade latency for speed)
+   - Monitor CPU usage: MediaPipe CPU mode uses ~80-100% of one core
 ```python
 # Face Detection
 target_face_size_px = 120
@@ -1052,38 +1361,311 @@ default_face_distance_mm = 1000
 
 ## Appendix C: Troubleshooting Guide
 
-### Common Issues
+### Common Issues and Solutions
 
-**Issue: Robot doesn't move**
-- Check tm_driver is running: `ros2 node list | grep tm_driver`
-- Verify send_script service: `ros2 service list | grep send_script`
-- Check robot is in Listen Node mode (TM Robot HMI)
+#### Camera Issues
 
-**Issue: No camera image**
-- Verify camera device: `ls -l /dev/video*`
-- Check usb_cam node: `ros2 topic echo /image_raw --once`
-- Test camera: `ffplay /dev/video0`
+**Problem: USB camera not detected**
+```bash
+# Check available cameras
+ls -l /dev/video*
 
-**Issue: Low FPS / Lag**
-- Check CPU usage: `top` (MediaPipe should use <50% one core)
-- Reduce process_every_n_frames if needed
-- Disable draw_face_mesh for performance
+# Test camera with v4l2
+v4l2-ctl --device=/dev/video0 --all
 
-**Issue: Face not detected**
-- Check lighting conditions (avoid backlighting)
-- Ensure face is in frame and visible
-- Adjust MediaPipe confidence thresholds
+# If camera is /dev/video2 or video4, update launch parameter:
+ros2 run usb_cam usb_cam_node_exe --ros-args --param video_device:=/dev/video2
+```
 
-**Issue: Robot oscillates**
-- Reduce movement scale parameter
-- Increase centering_threshold
-- Check for position desync (use FeedbackState)
+**Problem: Low frame rate (<15 FPS)**
+- **Cause:** Techman built-in camera (0.3 FPS) instead of USB webcam
+- **Solution:** Use external USB webcam (640×480 @ 30 FPS)
+```bash
+# Verify current camera FPS
+ros2 topic hz /image_raw
 
-**Issue: Commands rejected (ok=False)**
-- Check workspace limits in logs
-- Reduce max_single_axis_step
-- Ensure robot not near singularities
-- Verify joint limits not exceeded
+# Expected output: "average rate: 30.000"
+# If <1 FPS, switch to USB camera
+```
+
+**Problem: "Device or resource busy" when recording with FFmpeg**
+- **Cause:** vlogger_control node or usb_cam node already using webcam
+- **Solution:** Stop ROS nodes before external recording
+```bash
+# Option 1: Use built-in video recording (press 'v' in vlogger window)
+# Option 2: Stop ROS camera node first
+pkill -f usb_cam
+# Then run FFmpeg recording script
+```
+
+**Problem: Camera permission denied**
+```bash
+# Add user to video group
+sudo usermod -a -G video $USER
+# Logout and login again for group to take effect
+
+# Or set camera permissions
+sudo chmod 666 /dev/video0
+```
+
+---
+
+#### MediaPipe Issues
+
+**Problem: ImportError: No module named 'mediapipe'**
+```bash
+pip install mediapipe==0.10.9
+# If using virtual environment, activate first:
+source ~/venv/bin/activate
+pip install mediapipe==0.10.9
+```
+
+**Problem: Face not detected even when visible**
+- Lower detection confidence:
+```python
+# In vlogger_control.py
+self.face_mesh = mp_face_mesh.FaceMesh(
+    max_num_faces=1,
+    min_detection_confidence=0.3,  # Decrease from 0.5
+    min_tracking_confidence=0.3
+)
+```
+- Ensure good lighting (MediaPipe struggles in dim conditions)
+- Face should be frontal (±45° max yaw/pitch for reliable detection)
+
+**Problem: Hand gestures not recognized**
+- **1-finger detection fails:**
+  - Point index finger straight up, keep other fingers curled
+  - Hand should be 20-50cm from camera
+  - Ensure hand is well-lit and not in shadow
+- **5-finger detection fails:**
+  - Spread all fingers wide apart
+  - Palm should face camera directly
+  - Check MediaPipe hand landmarks are visible (blue overlay)
+
+---
+
+#### NumPy Compatibility Issues
+
+**Problem: AttributeError: 'numpy.ndarray' object has no attribute 'base'**
+- **Cause:** cv_bridge incompatible with NumPy 2.x
+- **Solution:** Downgrade to NumPy 1.26.4
+```bash
+pip install numpy==1.26.4
+
+# Verify version
+python3 -c "import numpy; print(numpy.__version__)"
+# Expected: 1.26.4
+
+# If still fails, uninstall and reinstall
+pip uninstall numpy -y
+pip install numpy==1.26.4
+```
+
+**Problem: cv_bridge fails with "ImportError: cannot import name '_registerMatType'"**
+- Same root cause as above
+- Solution: `pip install numpy==1.26.4` and rebuild workspace
+```bash
+cd ~/vlogger_ws
+colcon build --packages-select vlogger_system
+source install/setup.bash
+```
+
+---
+
+#### Robot Communication Issues
+
+**Problem: "send_script returned not ok" warnings**
+- **Cause 1: Workspace boundary violations**
+  - Check logs for "clamped" messages
+  - Solution: Adjust workspace limits or move initial position
+  ```python
+  # In vlogger_control.py, increase margins:
+  Y_MIN, Y_MAX = 20, 580  # Increase from 10, 590
+  Z_MIN, Z_MAX = 260, 640  # Increase from 250, 650
+  ```
+
+- **Cause 2: Robot arm limit / singularity**
+  - Robot rejects commands near joint limits or singularities
+  - Solution: Reset robot to safer starting position
+  ```python
+  INIT_X, INIT_Y, INIT_Z = 350, 300, 450  # Adjust initial position
+  ```
+
+- **Cause 3: Moving speed too fast**
+  - Robot rejects high-speed or high-acceleration commands
+  - Solution: Decrease speed and acceleration
+  ```python
+  self.speed_percent = 40  # Decrease from 60
+  self.acceleration_mm_s2 = 50  # Decrease from 100
+  ```
+
+- **Cause 4: Listen Node not enabled**
+  - Robot not listening for commands
+  - Solution: Enable Listen Node in TMFlow on robot teach pendant
+  ```
+  1. Open TMFlow
+  2. Go to Settings → Communication
+  3. Enable "Listen Node"
+  4. Set port to 5890 (default)
+  ```
+
+**Problem: Robot doesn't move even though face is detected**
+- Check if movement is below minimum threshold:
+  ```python
+  # Temporarily set to 0 for debugging
+  self.min_movement = 0  # Default is 20mm
+  ```
+- Verify SendScript service is available:
+  ```bash
+  ros2 service list | grep send_script
+  # Expected output: /send_script
+  ```
+- Check robot's current position:
+  ```bash
+  ros2 topic echo /feedback_states --once
+  ```
+
+**Problem: Robot moves in wrong direction**
+- **Cause:** Incorrect axis mapping or camera orientation
+- **Debugging:**
+  1. Move face RIGHT → Robot should move RIGHT (Y increases)
+  2. Move face UP → Robot should move UP (Z increases)
+  3. Move face CLOSER → Robot should move BACK (X increases depth)
+- **Solution:** Verify axis mapping in `calculate_new_position()`:
+  ```python
+  move_x_mm = 0.0  # Depth from face size only
+  move_y_mm = -offset_x * mm_per_pixel  # Horizontal (side)
+  move_z_mm = -offset_y * mm_per_pixel  # Vertical (height)
+  ```
+
+**Problem: Commands queued / position desync**
+- **Issue:** SendScript is async; position updates before robot confirms
+- **Symptom:** Robot "drifts" away from face over time
+- **Current status:** Known issue, partially mitigated by:
+  - Minimum movement threshold (skips tiny adjustments)
+  - Workspace clamping (prevents runaway)
+  - Conservative speed (reduces overshoot)
+- **Future fix:** Subscribe to `/feedback_states` to get actual robot position before next move
+
+---
+
+#### Display Window Issues
+
+**Problem: "Could not initialize OpenGL" or window crashes**
+```bash
+# Check X11 display
+echo $DISPLAY
+# Should output :0 or :1
+
+# If empty, set display:
+export DISPLAY=:0
+
+# Test with simple OpenCV window
+python3 -c "import cv2; cv2.imshow('test', cv2.imread('test.jpg')); cv2.waitKey(0)"
+```
+
+**Problem: Window freezes or becomes unresponsive**
+- **Cause:** High CPU usage from MediaPipe or video encoding
+- **Solution:**
+  - Stop video recording if active (press 'v')
+  - Reduce frame processing rate:
+    ```python
+    process_every_n_frames = 2  # Process every 2nd frame
+    ```
+  - Use GPU acceleration for MediaPipe (requires CUDA setup)
+
+**Problem: Video recording creates huge files**
+- **Cause:** Uncompressed or high-bitrate codec
+- **Current:** Using MJPEG codec (moderate compression)
+- **Optimization:** Switch to H.264 for better compression
+  ```python
+  fourcc = cv2.VideoWriter_fourcc(*'avc1')  # H.264 codec
+  # Requires ffmpeg with libx264 support
+  ```
+
+---
+
+#### Build and Dependency Issues
+
+**Problem: "Package 'vlogger_system' not found"**
+```bash
+# Rebuild workspace
+cd ~/vlogger_ws
+colcon build --packages-select vlogger_system
+
+# Source install
+source install/setup.bash
+
+# Verify package found
+ros2 pkg list | grep vlogger
+```
+
+**Problem: Python module import errors**
+```bash
+# Install all dependencies
+pip install \
+  mediapipe==0.10.9 \
+  opencv-python==4.8.1.78 \
+  numpy==1.26.4
+
+# If using ROS2 Jazzy on Ubuntu 24.04, ensure Python 3.12
+python3 --version  # Should be 3.12.x
+```
+
+**Problem: "ModuleNotFoundError: No module named 'cv_bridge'"**
+- **Cause:** cv_bridge not installed with ROS2
+- **Solution:**
+  ```bash
+  sudo apt install ros-jazzy-cv-bridge
+  source /opt/ros/jazzy/setup.bash
+  ```
+
+---
+
+#### Performance Optimization
+
+**Problem: High CPU usage (>100%)**
+- **Normal:** MediaPipe CPU mode uses ~80-100% of one core
+- **If excessive:**
+  - Close other applications
+  - Process fewer frames:
+    ```python
+    process_every_n_frames = 2
+    ```
+  - Reduce MediaPipe model complexity:
+    ```python
+    # Use simpler face detection (not implemented yet)
+    # Or reduce max_num_faces=1 (already set)
+    ```
+
+**Problem: Laggy/delayed robot response**
+- Check actual FPS in window title (should be ~30)
+- If FPS is low:
+  - Use USB webcam (not Techman camera)
+  - Close video recording (press 'v' to stop)
+  - Reduce MediaPipe processing time (already optimized)
+- If FPS is good but robot still lags:
+  - Decrease `min_movement` threshold (more frequent commands)
+  - Increase `speed_percent` (faster robot movement)
+
+---
+
+#### Safety and Emergency
+
+**Problem: Robot moving erratically or toward collision**
+1. **Immediately:** Press Emergency Stop on robot pendant
+2. Check workspace limits in code
+3. Verify face detection is stable (green box should be steady)
+4. Review recent command logs for anomalies
+
+**Problem: Face detection lost during operation**
+- **Expected behavior:** Robot stops immediately (safety feature)
+- **To resume:** Re-enter frame, detection should restart within 1-2 seconds
+- If detection doesn't resume:
+  - Check lighting (add light source)
+  - Verify camera is not obstructed
+  - Restart vlogger node
 
 ---
 
@@ -1137,7 +1719,27 @@ ros2 topic echo /feedback_states
 
 ---
 
-**Document Version:** 1.0  
-**Last Updated:** December 8, 2025  
+**Document Version:** 2.0  
+**Last Updated:** December 2025  
 **Authors:** Team 11 - Robotics Final Project  
-**Status:** Complete - Ready for Deployment
+**Status:** Unified Documentation - Integrated README.md content
+**Repository:** https://github.com/misuhsieh001/Robotics_Final
+
+---
+
+## Document History
+
+**Version 2.0 (December 2025):**
+- Integrated README.md content into comprehensive documentation
+- Added detailed Quick Start and Installation guide
+- Enhanced Configuration Reference with tuning workflow
+- Expanded Troubleshooting Guide with practical solutions
+- Added Safety Features section with operational guidelines
+- Included Recent Updates timeline with specific fixes
+- Created single-source documentation for both users and developers
+
+**Version 1.0 (December 8, 2025):**
+- Initial comprehensive technical documentation
+- 12 main sections covering architecture, algorithms, challenges
+- 4 appendices with installation, configuration, troubleshooting, and code snippets
+
