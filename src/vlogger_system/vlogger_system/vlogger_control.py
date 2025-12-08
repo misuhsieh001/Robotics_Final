@@ -147,23 +147,20 @@ class VloggerController(Node):
         # Distance estimation using face size (monocular vision)
         # Average human face width: ~150mm
         # Using similar triangles: face_size_pixels = (face_width_mm * focal_length) / distance_mm
-        self.average_face_width_mm = 200.0  # mm - average adult face width
+        self.average_face_width_mm = 150.0  # mm - average adult face width
         
         # Adjusted for 640x480 resolution (approx 1/4 of original 2592 width)
-        self.target_face_size = 120.0  # pixels - target face size for good framing (was 400)
+        self.target_face_size = 100.0  # pixels - target face size for good framing (was 400)
         # Tolerance adjusted so robot moves closer when face < 70px
-        self.face_size_tolerance = 20.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
+        self.face_size_tolerance = 15.0  # pixels - tolerance (100 ± 15 = 85-115px acceptable range)
         self.auto_distance_adjust = True  # Enable automatic distance adjustment based on face size
 
         # Movement parameters
         # With low FPS, we want to be more precise - smaller threshold means more accurate centering
-        self.centering_threshold = 20  # pixels - tighter tolerance for accurate tracking (was 25)
+        self.centering_threshold = 40  # pixels - tighter tolerance for accurate tracking (was 25)
+        self.movement_scale = 0.3  # Scale factor for movement (prevent overshooting)
         # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
-        self.min_movement = 20.0  # mm - minimum movement to execute (raised from 2.0 for stability)
-        
-    # Movement scaling (keep a single tuned scale for stability)
-    # Use the tuned value (previously 0.3) to avoid aggressive overshoot
-    # self.movement_scale = 0.3
+        self.min_movement = 10.0  # mm - minimum movement to execute (raised from 2.0 for stability)
 
         # Current robot position (initialize at starting position)
         self.current_x = 300.0
@@ -229,9 +226,16 @@ class VloggerController(Node):
 
         # Latest display image (for window updates)
         self.latest_display_image = None
+        self.latest_clean_image = None  # Clean image without overlays (for recording)
         self.image_lock = threading.Lock()  # Thread-safe lock for image synchronization
         self.latest_frame_timestamp = 0.0  # Timestamp of latest frame
         self.last_displayed_timestamp = -1.0  # Timestamp of last displayed frame (start with -1 to force initial update)
+        
+        # Video recording
+        self.is_recording = False
+        self.video_writer = None
+        self.recording_start_time = None
+        self.recording_filename = None
 
         # Control loop timer (10 Hz - Increased frequency for faster response)
         self.control_timer = self.create_timer(0.2, self.control_loop)
@@ -479,16 +483,30 @@ class VloggerController(Node):
                        (200, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 0), 2)
 
             y_pos += 30
-            cv2.putText(display_image, "Press 'q' to quit | 'r' to reset | 's' to save frame",
-                       (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            # Add recording status indicator
+            if self.is_recording:
+                elapsed_rec = time.time() - self.recording_start_time if self.recording_start_time else 0
+                rec_text = f"🔴 REC {elapsed_rec:.1f}s"
+                cv2.putText(display_image, rec_text,
+                           (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+                cv2.putText(display_image, "Press 'v' to stop recording | 'q' to quit | 's' to save frame",
+                           (200, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
+            else:
+                cv2.putText(display_image, "Press 'v' to record | 'q' to quit | 's' to save frame",
+                           (10, y_pos), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200, 200, 200), 1)
 
             # Store the display image for window update timer with thread-safe lock
             # Use debug-level logs here to avoid spamming the logger at INFO for every frame
             self.get_logger().debug('Storing display image for window update')
             with self.image_lock:
                 self.latest_display_image = display_image.copy()
+                self.latest_clean_image = cv_image.copy()  # Store clean image without overlays
                 self.latest_frame_timestamp = time.time()
             self.get_logger().debug(f'Image stored. Timestamp: {self.latest_frame_timestamp}')
+            
+            # Write to video if recording
+            if self.is_recording and self.video_writer is not None:
+                self.video_writer.write(cv_image)  # Write clean image without overlays
 
         except Exception as e:
             self.get_logger().error(f'❌ ERROR in image callback: {str(e)}')
@@ -549,14 +567,23 @@ class VloggerController(Node):
 
             if key == ord('q'):
                 self.get_logger().info('User pressed "q" - shutting down...')
+                self.stop_recording()  # Stop recording before shutdown
                 rclpy.shutdown()
             elif key == ord('s'):
                 filename = f"vlogger_frame_{int(time.time())}.jpg"
-                cv2.imwrite(filename, display_image)
-                self.get_logger().info(f'Frame saved: {filename}')
+                # Save clean image without overlays
+                with self.image_lock:
+                    if self.latest_clean_image is not None:
+                        cv2.imwrite(filename, self.latest_clean_image)
+                        self.get_logger().info(f'Frame saved: {filename}')
+            elif key == ord('v'):
+                # Toggle recording
+                if self.is_recording:
+                    self.stop_recording()
+                else:
+                    self.start_recording()
             elif key == ord('r'):
-                self.get_logger().info('Resetting to initial position...')
-                self.position_history.clear()
+                self.get_logger().info('Resetting detection...')
                 self.current_human_pos = None
 
         except Exception as e:
@@ -565,6 +592,70 @@ class VloggerController(Node):
             self.get_logger().error(f'Error updating window: {str(e)}')
             self.get_logger().error(traceback.format_exc())
             self.window_created = False  # Disable window updates on error
+
+    def start_recording(self):
+        """Start video recording (clean frames without overlays)"""
+        try:
+            if self.is_recording:
+                self.get_logger().warning('Already recording!')
+                return
+            
+            # Get clean image dimensions
+            with self.image_lock:
+                if self.latest_clean_image is None:
+                    self.get_logger().warning('No image available to start recording')
+                    return
+                h, w = self.latest_clean_image.shape[:2]
+            
+            # Create recordings directory if it doesn't exist
+            recordings_dir = 'recordings'
+            if not os.path.exists(recordings_dir):
+                os.makedirs(recordings_dir)
+            
+            # Generate filename with timestamp
+            timestamp = time.strftime("%Y%m%d_%H%M%S")
+            self.recording_filename = os.path.join(recordings_dir, f'vlogger_{timestamp}.mp4')
+            
+            # Initialize video writer (MP4 format, H264 codec)
+            fourcc = cv2.VideoWriter_fourcc(*'mp4v')
+            fps = 30.0  # Target FPS for recording
+            self.video_writer = cv2.VideoWriter(self.recording_filename, fourcc, fps, (w, h))
+            
+            if not self.video_writer.isOpened():
+                self.get_logger().error('Failed to open video writer')
+                self.video_writer = None
+                return
+            
+            self.is_recording = True
+            self.recording_start_time = time.time()
+            self.get_logger().info(f'🔴 Recording started: {self.recording_filename}')
+            
+        except Exception as e:
+            self.get_logger().error(f'Error starting recording: {str(e)}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
+    
+    def stop_recording(self):
+        """Stop video recording and save file"""
+        try:
+            if not self.is_recording:
+                return
+            
+            self.is_recording = False
+            
+            if self.video_writer is not None:
+                self.video_writer.release()
+                self.video_writer = None
+                
+                duration = time.time() - self.recording_start_time if self.recording_start_time else 0
+                self.get_logger().info(f'⏹️  Recording stopped: {self.recording_filename} (duration: {duration:.1f}s)')
+                self.recording_filename = None
+                self.recording_start_time = None
+            
+        except Exception as e:
+            self.get_logger().error(f'Error stopping recording: {str(e)}')
+            import traceback
+            self.get_logger().error(traceback.format_exc())
 
     def trigger_camera_capture(self):
         """
@@ -891,7 +982,7 @@ class VloggerController(Node):
     def calculate_new_position(self, offset_x, offset_y, face_size, gesture_command):
         """
         Calculate new robot position based on human position and gestures.
-
+        
         MAPPING (Standard Robot Frame):
         - Image X (Horizontal) -> Robot Y (Left/Right)
         - Image Y (Vertical)   -> Robot Z (Up/Down)
@@ -902,9 +993,10 @@ class VloggerController(Node):
         new_y = self.current_y
         new_z = self.current_z
 
-        # Use fixed tuned scale to avoid overshoot (empirically stable)
-        # 0.35 = slight improvement over 0.3 (less segmented) while avoiding overshoot
-        scale = 0.32
+        # Convert pixel offset to robot movement
+        # CRITICAL: Reduced scale to prevent overshooting workspace limits
+        # With 640x480 resolution and scale=0.3, max offset ~240px → ~72mm movement
+        scale = 0.3  # Conservative scaling to prevent hitting limits
 
         # 1. Horizontal Tracking (Image X -> Robot X, Y)
         # Human Right (Offset X > 0) -> Arm moves (-1, -1) direction
@@ -916,6 +1008,13 @@ class VloggerController(Node):
         # If Face is Down (Offset Y > 0), Robot must move Down (-Z)
         move_z = -1.0 * offset_y * scale
 
+        # Safety: Limit max movement per step to prevent extreme jumps
+        max_step = 150.0  # mm maximum movement per command (conservative)
+
+        move_x = max(-max_step, min(max_step, move_x))
+        move_y = max(-max_step, min(max_step, move_y))
+        move_z = max(-max_step, min(max_step, move_z))
+        
         new_x += move_x
         new_y += move_y
         new_z += move_z
@@ -940,29 +1039,25 @@ class VloggerController(Node):
             # AUTOMATIC DISTANCE ADJUSTMENT
             if self.auto_distance_adjust and face_size > 0:
                 face_size_diff = face_size - self.target_face_size
-                
-                # Always log face size for debugging
-                self.get_logger().info(
-                    f'Face size: {face_size:.0f}px (target: {self.target_face_size:.0f}, diff: {face_size_diff:+.0f}, tolerance: {self.face_size_tolerance:.0f})'
-                )
 
                 if abs(face_size_diff) > self.face_size_tolerance:
-                    # If face too big (diff > 0), move Back (decrease X)
-                    # If face too small (diff < 0), move Forward (increase X)
-                    # Distance adjustment should ONLY affect X (depth), not Y (left/right)
-                    adjustment = face_size_diff * 2.0  # Increased to 2.0 for stronger adjustment
+                    # If face too big (diff > 0), move Back (-1, 1) direction
+                    # If face too small (diff < 0), move Forward (1, -1) direction
+                    # Increase gain so face-size changes produce noticeable robot motion.
+                    # face_size_diff is in pixels; multiplier maps it to mm adjustment.
+                    adjustment = face_size_diff * 1.0  # Increased from 0.3 to 1.0 for more noticeable adjustment
 
                     # Limit maximum distance adjustment to prevent extreme movements
-                    max_adjustment = 100.0  # Increased to 100mm for more range
+                    max_adjustment = 50.0  # Increased from 50mm to 100mm for more range
                     adjustment = max(-max_adjustment, min(max_adjustment, adjustment))
 
-                    # ONLY adjust X for distance (forward/backward)
-                    # Do NOT adjust Y - that's only for left/right centering
-                    new_x -= adjustment  # Subtract: face too big (positive diff) -> move back (decrease X)
+                    new_x -= adjustment  # Subtract adjustment to move in correct direction
+                    new_y += adjustment  # Add adjustment to move in (1, -1) direction
 
-                    self.get_logger().info(
-                        f'>>> DISTANCE ADJUSTMENT: Moving X by {-adjustment:+.1f}mm (face {"too big - backing up" if adjustment > 0 else "too small - moving closer"})'
-                    )
+                    if abs(adjustment) > 5.0:
+                        self.get_logger().info(
+                            f'Auto-distance: face {face_size:.0f}px, adjusting X by {-adjustment:+.1f}mm, Y by {adjustment:+.1f}mm'
+                        )
 
         # Enforce workspace limits
         # X (Depth): 100mm to 600mm
@@ -1119,6 +1214,8 @@ def main(args=None):
     except KeyboardInterrupt:
         logger.info('Shutting down...')
     finally:
+        # Ensure recording is stopped before shutdown
+        controller.stop_recording()
         controller.destroy_node()
         rclpy.shutdown()
         cv2.destroyAllWindows()
