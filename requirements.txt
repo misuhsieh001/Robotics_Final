@@ -1,0 +1,21 @@
+# TM5-900 Indoor Vlogger System - Python Dependencies
+# Install with: pip install -r requirements.txt
+
+# Computer Vision & Face/Hand Detection
+mediapipe==0.10.9
+opencv-python==4.8.1.78
+
+# NumPy (CRITICAL: Must use 1.x for cv_bridge compatibility)
+# NumPy 2.x will cause segmentation faults with ROS2 cv_bridge
+numpy==1.26.4
+
+# Additional dependencies (automatically installed with above packages)
+# Listed here for reference:
+# - protobuf (required by mediapipe)
+# - attrs (required by mediapipe)
+# - matplotlib (optional, for visualization)
+# - absl-py (required by mediapipe)
+
+# Note: ROS2 dependencies (rclpy, cv_bridge, etc.) are installed via apt, not pip
+# Install ROS2 packages with:
+#   sudo apt install ros-jazzy-cv-bridge ros-jazzy-image-transport

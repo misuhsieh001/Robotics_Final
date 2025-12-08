@@ -74,9 +74,12 @@ cd ~/vlogger_ws/src
 
 # 2. Clone repository
 git clone https://github.com/misuhsieh001/Robotics_Final.git
+cd Robotics_Final
 
 # 3. Install Python dependencies
-pip install mediapipe opencv-python numpy==1.26.4
+pip install -r requirements.txt
+# Or manually:
+# pip install mediapipe==0.10.9 opencv-python==4.8.1.78 numpy==1.26.4
 
 # 4. Build ROS2 workspace
 cd ~/vlogger_ws
@@ -1133,6 +1136,8 @@ self.acceleration_mm_s2 = 100  # Smooth acceleration
 ### 12.4 Project Resources
 
 - **GitHub Repository:** https://github.com/misuhsieh001/Robotics_Final
+- **Requirements File:** `requirements.txt` - Python dependencies for easy installation
+- **Fix Documentation:** `FIX_DOCUMENTATION.md` - Technical fixes and troubleshooting
 - **Project Team:** Team 11
 - **Course:** Robotics Systems (Fall 2025)
 
@@ -1157,12 +1162,11 @@ cd ~/workspace2/team11_ws_final_project/Robotics_Final_Project
 python3 -m venv venv
 source venv/bin/activate
 
-# Python packages
+# Python packages (using requirements.txt)
 pip install --upgrade pip
-pip install \
-    mediapipe==0.10.9 \
-    opencv-python==4.8.1.78 \
-    numpy==1.26.4
+pip install -r requirements.txt
+# Or install manually:
+# pip install mediapipe==0.10.9 opencv-python==4.8.1.78 numpy==1.26.4
 
 # Build ROS2 workspace
 cd ~/workspace2/team11_ws_final_project/Robotics_Final_Project
