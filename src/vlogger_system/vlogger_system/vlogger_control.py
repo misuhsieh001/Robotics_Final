@@ -10,6 +10,7 @@ This system uses the TM5-900 robot arm as an automated vlogger that:
 5. Responds to finger gestures:
    - 1 finger: Move closer
    - 5 fingers: Back up
+   - OK sign (👌): Reset to initial position
 """
 
 import rclpy
@@ -162,13 +163,21 @@ class VloggerController(Node):
         # With low FPS, accept smaller movements to ensure we don't skip needed adjustments
         self.min_movement = 10.0  # mm - minimum movement to execute (raised from 2.0 for stability)
 
+        # Initial position constants (for reset gesture)
+        self.INIT_X = 300.0
+        self.INIT_Y = 300.0
+        self.INIT_Z = 450.0  # Starting height for vlogging
+        self.INIT_RX = 90.0
+        self.INIT_RY = 0.0
+        self.INIT_RZ = 50.0
+
         # Current robot position (initialize at starting position)
-        self.current_x = 300.0
-        self.current_y = 300.0
-        self.current_z = 400.0  # Starting height for vlogging
-        self.current_rx = 90.0
-        self.current_ry = 0.0
-        self.current_rz = 50.0
+        self.current_x = self.INIT_X
+        self.current_y = self.INIT_Y
+        self.current_z = self.INIT_Z
+        self.current_rx = self.INIT_RX
+        self.current_ry = self.INIT_RY
+        self.current_rz = self.INIT_RZ
 
         # Face detection (OpenCV Haar Cascade)
         # cascade_path = cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
@@ -809,7 +818,7 @@ class VloggerController(Node):
     def detect_gesture(self, image, display_image):
         """
         Detect hand gestures using MediaPipe.
-        Returns: "CLOSER" (1 finger), "BACKUP" (5 fingers), or None
+        Returns: "RESET" (OK sign 👌), "CLOSER" (1 finger 👆), "BACKUP" (5 fingers 🖐️), or None
         """
         if not self.gesture_mode:
             return None
@@ -835,8 +844,16 @@ class VloggerController(Node):
                 # Count extended fingers
                 fingers_up = self.count_fingers(hand_landmarks)
 
+                # Check for OK sign (thumb and index finger touching)
+                is_ok_sign = self.detect_ok_sign(hand_landmarks)
+
                 gesture = None
-                if fingers_up == 1:
+                if is_ok_sign:
+                    gesture = "RESET"
+                    self.last_gesture = gesture
+                    self.last_gesture_time = current_time
+                    self.get_logger().info('👌 Gesture detected: RESET TO INITIAL POSITION')
+                elif fingers_up == 1:
                     gesture = "CLOSER"
                     self.last_gesture = gesture
                     self.last_gesture_time = current_time
@@ -884,6 +901,42 @@ class VloggerController(Node):
                 fingers_up += 1
 
         return fingers_up
+
+    def detect_ok_sign(self, hand_landmarks):
+        """
+        Detect OK sign gesture (thumb and index finger forming a circle).
+        Returns: True if OK sign is detected, False otherwise
+        """
+        # Get landmark positions
+        thumb_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.THUMB_TIP]
+        index_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.INDEX_FINGER_TIP]
+        middle_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_TIP]
+        ring_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.RING_FINGER_TIP]
+        pinky_tip = hand_landmarks.landmark[self.mp_hands.HandLandmark.PINKY_TIP]
+        
+        # Get PIP joints
+        middle_pip = hand_landmarks.landmark[self.mp_hands.HandLandmark.MIDDLE_FINGER_PIP]
+        ring_pip = hand_landmarks.landmark[self.mp_hands.HandLandmark.RING_FINGER_PIP]
+        pinky_pip = hand_landmarks.landmark[self.mp_hands.HandLandmark.PINKY_PIP]
+        
+        # Calculate distance between thumb tip and index finger tip
+        thumb_index_distance = ((thumb_tip.x - index_tip.x) ** 2 + 
+                                (thumb_tip.y - index_tip.y) ** 2) ** 0.5
+        
+        # OK sign: thumb and index finger are close (forming circle)
+        # Threshold: 0.05 is empirically good for detecting touching fingers
+        fingers_touching = thumb_index_distance < 0.05
+        
+        # Check if middle, ring, and pinky fingers are extended (up)
+        middle_up = middle_tip.y < middle_pip.y
+        ring_up = ring_tip.y < ring_pip.y
+        pinky_up = pinky_tip.y < pinky_pip.y
+        
+        # OK sign: thumb+index touching AND other 3 fingers up
+        # (We can be flexible - allow 2 or 3 fingers up)
+        other_fingers_up = sum([middle_up, ring_up, pinky_up]) >= 2
+        
+        return fingers_touching and other_fingers_up
 
     def control_loop(self):
         """
@@ -963,7 +1016,7 @@ class VloggerController(Node):
     def process_gesture_command(self):
         """
         Process gesture commands and return distance adjustment.
-        Returns: "closer", "backup", or None
+        Returns: "reset", "closer", "backup", or None
 
         FIX: Gesture commands are active for cooldown period after detection.
         This allows the robot to execute the gesture command even though
@@ -1021,7 +1074,14 @@ class VloggerController(Node):
 
         # 3. Distance Tracking (Face Size -> Robot X)
         # Handle gesture commands for distance (X-axis)
-        if gesture_command == "closer":
+        if gesture_command == "reset":
+            # Reset to initial position
+            new_x = self.INIT_X
+            new_y = self.INIT_Y
+            new_z = self.INIT_Z
+            self.get_logger().info(f'👌 Gesture: RESETTING to initial position ({new_x}, {new_y}, {new_z})')
+            self.auto_distance_adjust = False
+        elif gesture_command == "closer":
             new_x += 100.0  # Move Forward (+X)
             new_y -= 100.0  # Move Right (-Y)
             self.get_logger().info(f'Gesture: Moving closer {self.current_x:.1f} → {new_x:.1f}mm')
@@ -1188,6 +1248,7 @@ def main(args=None):
     logger.info('  - Robot will keep you centered')
     logger.info('  - Show 1 finger: Move closer')
     logger.info('  - Show 5 fingers: Back up')
+    logger.info('  - Show OK sign (👌): Reset to initial position')
     logger.info('==============================================')
     logger.info('')
 
