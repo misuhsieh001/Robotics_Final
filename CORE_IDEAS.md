@@ -74,10 +74,11 @@ Maintains optimal shot composition by:
 Enables intuitive human-robot interaction through **MediaPipe Hands**:
 - **1 finger up (☝️)**: Move 100mm closer
 - **5 fingers up (🖐️)**: Move 100mm back
+- **OK sign (👌)**: Return to home position (300, 300, 450)mm
 - Provides manual override of automatic distance control
 - Implements 2-second cooldown to prevent accidental triggers
 
-**User Experience Design:** Natural, non-verbal communication allows the subject to control the robot without breaking the flow of recording or leaving the frame.
+**User Experience Design:** Natural, non-verbal communication allows the subject to control the robot without breaking the flow of recording or leaving the frame. The OK sign gesture provides a quick way to reset the robot to a safe, known position.
 
 ---
 
@@ -343,6 +344,7 @@ This section describes the complete operational workflow of the vlogger system, 
 │  │     ├─> Handle gesture commands                        │    │
 │  │     │   • 1 finger: move_x += 100mm (closer)           │    │
 │  │     │   • 5 fingers: move_x -= 100mm (backup)          │    │
+│  │     │   • OK sign: return to home (300,300,450)mm      │    │
 │  │     │                                                   │    │
 │  │     └─> Enforce workspace limits                       │    │
 │  │         X: [100, 600]mm  Y: [10, 590]mm  Z: [250, 650]mm  │
@@ -486,6 +488,7 @@ This phase runs continuously until the user quits.
    - Recognize gestures:
      - 1 finger → "CLOSER" command
      - 5 fingers → "BACKUP" command
+     - OK sign (thumb + index circle) → "HOME" command
    - Apply 2-second cooldown to prevent re-triggering
 
 4. **Position Update & Smoothing**
@@ -578,6 +581,8 @@ This phase runs continuously until the user quits.
        move_x += 100mm
    elif gesture == "backup":
        move_x -= 100mm
+   elif gesture == "home":
+       new_x, new_y, new_z = 300, 300, 450  # Return to home
    ```
 
 5. **Safety Constraints**
@@ -773,6 +778,9 @@ This phase runs continuously until the user quits.
    elif fingers_up == 5:
        gesture = "BACKUP"
        last_gesture_time = current_time
+   elif is_ok_sign(hand_landmarks):
+       gesture = "HOME"
+       last_gesture_time = current_time
    ```
 
 2. **Cooldown Period (2 seconds)**
@@ -794,6 +802,9 @@ This phase runs continuously until the user quits.
    elif gesture == "backup":
        new_x -= 100mm
        auto_distance_adjust = False
+   elif gesture == "home":
+       new_x, new_y, new_z = 300, 300, 450  # Return to home position
+       auto_distance_adjust = True  # Re-enable auto after home
    ```
 
 4. **Auto-Resume (5 seconds)**
@@ -808,6 +819,13 @@ This phase runs continuously until the user quits.
 3. Robot moves 100mm forward over ~1 second
 4. 2-second cooldown prevents accidental re-trigger
 5. After 5 seconds, automatic distance control resumes
+
+**Home Position Reset:**
+1. Subject shows OK sign (👌) → Robot sees gesture
+2. Robot logs "👌 Gesture detected: RETURN HOME"
+3. Robot smoothly returns to home position (300, 300, 450)mm
+4. Automatic distance control re-enabled immediately
+5. Useful for resetting after manual adjustments or camera angle changes
 
 ---
 
@@ -924,6 +942,10 @@ TRACKING (Centering + Distance)
     ├──[Gesture: 5 Fingers]─> MANUAL_BACKUP (2s)
     │                              │
     │                              │ [Timeout 5s]
+    │                              ▼
+    ├──[Gesture: OK Sign]────> RETURN_HOME (immediate)
+    │                              │
+    │                              │ [Auto re-enabled]
     │                              ▼
     └─────────────────────────> TRACKING (Auto-resume)
 

@@ -51,6 +51,7 @@ Our autonomous vlogger eliminates these limitations by providing intelligent cam
 - ✅ **Gesture Recognition** - Hand gestures provide manual distance control:
   - 👆 **1 finger** → Move closer (100mm)
   - 🖐️ **5 fingers** → Back up (100mm)
+  - 👌 **OK sign** → Return to home position
 - ✅ **Live View Window** - Real-time display with detection overlays, tracking status, and face size indicators
 - ✅ **Video Recording** - Clean MP4 recording without UI overlays (press 'v' to toggle)
 - ✅ **Direct Movement Control** - Calibrated mm-per-pixel conversion for precise positioning
@@ -111,6 +112,7 @@ Once running, the system displays a window showing:
 **Gesture Commands:**
 - **1 finger (☝️)** - Move robot closer by 100mm
 - **5 fingers (🖐️)** - Move robot back by 100mm
+- **OK sign (👌)** - Return robot to home position (300, 300, 450)mm
 
 **Expected Behavior:**
 1. Robot automatically centers your face in the frame
@@ -253,6 +255,7 @@ Once running, the system displays a window showing:
   - Count extended fingers by comparing tip Y-coordinate vs PIP joint
   - 1 finger up → "CLOSER" command
   - 5 fingers up → "BACKUP" command
+  - OK sign (thumb + index finger circle) → "HOME" command
 - **Debouncing:** 2-second cooldown between gesture commands
 
 ### 3.2 Robot Control
@@ -909,6 +912,7 @@ Initial cv2.imshow() calls caused crashes on some systems:
 **Scenario 3: Gesture Commands**
 - Subject raises 1 finger → robot moves 100mm closer
 - Subject raises 5 fingers → robot moves 100mm back
+- Subject shows OK sign → robot returns to home position (300, 300, 450)mm
 - Auto-distance resumes after 5 seconds
 
 **Scenario 4: Video Recording**
@@ -971,8 +975,9 @@ self.acceleration_mm_s2 = 100  # Smooth acceleration
 - Robot can be manually controlled at any time via teach pendant
 
 **7. Gesture Command Safeguards**
-- Manual gesture adjustments (+100mm / -100mm) still clamped to workspace
+- Manual gesture adjustments (+100mm / -100mm / home) still clamped to workspace
 - Requires clear hand gesture (prevents accidental triggers)
+- OK sign returns robot to predefined safe home position
 - Auto-distance control resumes after gesture timeout (5 seconds)
 
 **Operational Safety Guidelines:**
@@ -1304,10 +1309,13 @@ if finger_count == 1:
     adjustment = -100  # mm (move closer)
 elif finger_count == 5:
     adjustment = 100   # mm (back up)
+elif is_ok_sign():
+    return "HOME"      # return to home position
 ```
 - Adjust distance per gesture command
 - Decrease (50mm) for fine control
 - Increase (150mm) for dramatic framing changes
+- OK sign returns to predefined home position (300, 300, 450)mm
 
 #### Performance Tuning Workflow
 
@@ -1446,6 +1454,11 @@ self.face_mesh = mp_face_mesh.FaceMesh(
   - Spread all fingers wide apart
   - Palm should face camera directly
   - Check MediaPipe hand landmarks are visible (blue overlay)
+- **OK sign detection fails:**
+  - Form clear circle with thumb and index finger
+  - Keep other three fingers extended
+  - Hold gesture steady for 0.5 seconds
+  - Ensure circle is clearly visible to camera
 
 ---
 
