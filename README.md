@@ -70,12 +70,11 @@ Our autonomous vlogger eliminates these limitations by providing intelligent cam
 #### Installation Steps
 ```bash
 # 1. Create ROS2 workspace
-mkdir -p ~/vlogger_ws/src
-cd ~/vlogger_ws/src
+mkdir -p ~/vlogger_ws
+cd ~/vlogger_ws
 
 # 2. Clone repository
 git clone https://github.com/misuhsieh001/Robotics_Final.git
-cd Robotics_Final
 
 # 3. Install Python dependencies
 pip install -r requirements.txt
@@ -93,7 +92,10 @@ ros2 launch tm_driver tm_driver.launch.py robot_ip:=<YOUR_ROBOT_IP>
 # 6. Enable robot's Listen Node
 # Use TMFlow on robot teach pendant to enable "Listen Node"
 
-# 7. Launch vlogger system (in terminal 2)
+# 7. Launch webcam (in terminal 2)
+./start_usb_camera.sh
+
+# 8. Launch vlogger system (in terminal 3)
 ros2 run vlogger_system vlogger_control
 ```
 
